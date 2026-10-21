@@ -178,7 +178,7 @@ def test_fixed_row_full_single_and_strided_chunk_shapes(cpu_policy, kind, heads)
         )
     assert full.dtype == torch.bfloat16 and full.shape == values.shape
     assert torch.isfinite(full).all()
-    # FP64 formula checks zero-centered weights and final-only BF16 materialization;
+    # FP64 formula checks zero-centered weights on an exactly reduced input;
     # do not impose a campaign numeric error tolerance on general FP32 reductions.
     ones = torch.ones_like(values)
     golden = (
@@ -187,6 +187,27 @@ def test_fixed_row_full_single_and_strided_chunk_shapes(cpu_policy, kind, heads)
         * (1.0 + module.weight.double())
     ).to(torch.bfloat16)
     assert torch.equal(module(ones), golden)
+
+
+def test_normalized_values_stay_fp32_until_after_zero_centered_weight(cpu_policy):
+    torch, modeling, root = cpu_policy
+    policy.install(root, config(), policy.digest(policy.__file__), policy.digest(modeling.__file__))
+    module = root.get_submodule("model.language_model.layers.0.input_layernorm")
+    with torch.no_grad():
+        module.weight.fill_(-0.4921875)  # Exactly representable in BF16.
+    values = torch.tensor([1.0, 2.0], dtype=torch.bfloat16).repeat(2560).reshape(1, 1, 5120)
+    normalized64 = values.double() * torch.rsqrt(
+        values.double().square().mean(-1, keepdim=True) + module.eps
+    )
+    golden = (normalized64 * (1.0 + module.weight.double())).to(torch.bfloat16)
+    premature = (
+        normalized64.to(torch.bfloat16).float() * (1.0 + module.weight.float())
+    ).to(torch.bfloat16)
+    # This input straddles a BF16 rounding boundary only when the cast is early.
+    assert golden[0, 0, 0].item() == 0.3203125
+    assert premature[0, 0, 0].item() == 0.322265625
+    assert not torch.equal(golden, premature)
+    assert torch.equal(module(values), golden)
 
 
 @pytest.mark.parametrize("mutation", ["forward", "hook", "wrong_type", "missing", "dtype"])
