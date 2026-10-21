@@ -559,3 +559,93 @@ def test_fp8_reference_requires_authenticated_metadata(native_bundle, mutation, 
         native_bundle[2].write_text(json.dumps(manifest))
     code, result = native_validator_subprocess(native_bundle, extra)
     assert code == 2 and result["verdict"] == "INCONCLUSIVE"
+
+
+@pytest.fixture
+def normalized_reference_bundle(native_bundle):
+    import copy
+
+    from examples.qwen38_text.fp8_reference import adapt_reference_config
+    from examples.qwen38_text.reference_rmsnorm import LABEL, POLICY
+    from examples.qwen38_text.validate import normalization_contract
+
+    kernel = upgrade_fp8_bundle(native_bundle)
+    run, _workload, manifest_path = native_bundle
+    spec_path = run / "run.lock.json"
+    spec = json.loads(spec_path.read_text())
+    spec.update(comparison_scope="reference_self_check", candidate_repo=None)
+    spec_path.write_text(json.dumps(spec))
+    model_path = manifest_path.parent / "model-metadata"
+    config_path = model_path / "config.json"
+    config = json.loads(config_path.read_text())
+    config["text_config"].update(hidden_size=8, head_dim=4, num_attention_heads=2,
+                               num_key_value_heads=1, rms_norm_eps=1e-6,
+                               layer_types=["linear_attention"])
+    config_path.write_text(json.dumps(config))
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0].update(sha256=digest(config_path), size=config_path.stat().st_size)
+    manifest_path.write_text(json.dumps(manifest))
+    index = json.loads((model_path / "model.safetensors.index.json").read_text())
+    projection = "model.language_model.layers.0.mlp.gate_proj"
+    adaptation = adapt_reference_config(config, index, {projection})[1]
+    source = Path(__file__).resolve().parents[1] / "examples/qwen38_text/reference_rmsnorm.py"
+    contract = normalization_contract(config, digest(source), "e" * 64)
+    baseline_path = run / "baseline/trial-001/result.json"
+    record = json.loads(baseline_path.read_text())
+    record.update(qualification_scope="reference_self_check", manifest_sha256=digest(manifest_path),
+                  reference_implementation=LABEL)
+    record["fp8_loading"]["config_adaptation"] = adaptation
+    record["reference_normalization"] = {
+        **contract["identity"], "parameters_preserved": True, "state_keys_preserved": True,
+        "modules": [{"name": name, "width": 8, "eps": 1e-6, "weight_dtype": "bfloat16",
+                     "weight_sha256_fp32": "f" * 64, "calls": 2, "input_shapes": [[1, 2, 8]]}
+                    for name in sorted(contract["modules"])],
+    }
+    baseline_path.write_text(json.dumps(record))
+    candidate = copy.deepcopy(record)
+    candidate["implementation"] = "transformers_cached"
+    (run / "candidate/trial-001/result.json").write_text(json.dumps(candidate))
+    return native_bundle, ("--qualification-scope", "reference_self_check",
+                          "--model-id", "Qwen/Qwen3.8-27B-FP8",
+                          "--fp8-kernel-revision", kernel["revision"],
+                          "--fp8-kernel-sha256", kernel["snapshot_sha256"],
+                          "--model-path", str(model_path), "--reference-rmsnorm-policy", POLICY,
+                          "--reference-rmsnorm-sha256", digest(source),
+                          "--reference-modeling-sha256", "e" * 64)
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing", "same_count_wrong_name", "wrong_width", "wrong_policy",
+    "wrong_source", "changed_weights", "zero_calls", "missing_metadata", "changed_metadata",
+])
+def test_real_validator_cli_rejects_missing_or_forged_normalization(
+    normalized_reference_bundle, mutation,
+):
+    bundle, extra = normalized_reference_bundle
+    code, result = native_validator_subprocess(bundle, extra)
+    assert code == 0 and result["verdict"] == "PASS"  # Synthetic evidence only.
+    if mutation in {"missing_metadata", "changed_metadata"}:
+        metadata = bundle[2].parent / "model-metadata/config.json"
+        if mutation == "missing_metadata":
+            metadata.unlink()
+        else:
+            metadata.write_text(metadata.read_text() + " ")
+    else:
+        def alter(record):
+            if mutation == "missing":
+                record.pop("reference_normalization")
+            elif mutation == "same_count_wrong_name":
+                record["reference_normalization"]["modules"][0]["name"] = "wrong.norm"
+            elif mutation == "wrong_width":
+                record["reference_normalization"]["modules"][0]["width"] = 9
+            elif mutation == "wrong_policy":
+                record["reference_normalization"]["policy"] = "stock"
+            elif mutation == "wrong_source":
+                record["reference_normalization"]["source_sha256"] = "0" * 64
+            elif mutation == "changed_weights":
+                record["reference_normalization"]["modules"][0]["weight_sha256_fp32"] = "0" * 64
+            else:
+                record["reference_normalization"]["modules"][0]["calls"] = 0
+        mutate_case(bundle, alter)
+    code, result = native_validator_subprocess(bundle, extra)
+    assert code == 2 and result["verdict"] == "INCONCLUSIVE"

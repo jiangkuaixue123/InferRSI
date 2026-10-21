@@ -221,3 +221,30 @@ reference and candidate backend implementations intentionally differ.
 
 These contracts and CPU smoke tests are preparation, not FP8 model acceptance.
 Freeze the new sources, environment, workload and gates before GPU experiments.
+
+### Explicit fixed-row reference normalization
+
+An acceptance-scoped FP8 `reference_self_check` may opt into
+`--reference-rmsnorm-policy fixed-pairwise-fp32-v1`, together with
+`--reference-rmsnorm-sha256 '<adapter_sha256>'` and
+`--reference-modeling-sha256 '<original_transformers_modeling_sha256>'`.
+Freeze these flags on both trial modes and the validator before execution.
+The adapter and validator source bundle must include `reference_rmsnorm.py`.
+Stock reference behavior remains the default; a fixed-policy run is labelled
+`transformers_fp8_with_fixed_pairwise_fp32_rmsnorm` in its evidence.
+
+This harness policy replaces only the exact config-derived text plain RMSNorm
+set: decoder input/post-attention norms, full-attention Q/K norms, and the final
+text norm. It preserves the original Parameter objects, epsilon, zero-centered
+weight formula and final BF16 conversion, while fixing a pairwise FP32 reduction
+tree over each logical row's last dimension, including strided 4D Q/K inputs.
+Gated normalization, FP8 execution and installed Transformers sources are unchanged.
+Runtime checks bind module coverage, calls/shapes, unchanged weights/state keys,
+actual adapter import origin and both source fingerprints. The validator derives
+its expected module set independently from authenticated checkpoint metadata.
+
+This is a new explicit oracle policy, not evidence that normalization or model
+quality has passed. Existing numerical gates and complete self-check workloads
+still apply. Other operator shapes may still differ; operator invariance alone
+cannot qualify a model. Native comparisons require a separately accepted oracle
+identity and are intentionally unavailable for this policy in the current slice.

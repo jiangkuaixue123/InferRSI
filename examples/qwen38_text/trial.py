@@ -58,7 +58,7 @@ REQUIRED = {
 TRIAL_STAGES = frozenset({
     "setup", "integrity", "workload", "kernel", "imports", "device", "tokenization",
     "config_adaptation", "checkpoint_load", "loading_info", "fp8_inspection",
-    "result_metadata", "logits", "finalization",
+    "reference_normalization", "result_metadata", "logits", "finalization",
 })
 
 
@@ -211,6 +211,16 @@ def run(args: argparse.Namespace) -> dict:
     if scope == "native_text_smoke" and args.mode != "full":
         raise ValueError("Native smoke reference must use full-prefix recomputation")
     model_id = getattr(args, "model_id", MODEL_ID)
+    norm_policy = getattr(args, "reference_rmsnorm_policy", "stock")
+    norm_source = getattr(args, "reference_rmsnorm_sha256", None)
+    modeling_source = getattr(args, "reference_modeling_sha256", None)
+    if norm_policy == "fixed-pairwise-fp32-v1":
+        if (model_id != FP8_MODEL_ID or scope != "reference_self_check"
+                or any(not isinstance(value, str) or not HEX64.fullmatch(value)
+                       for value in (norm_source, modeling_source))):
+            raise ValueError("Fixed normalization requires FP8 self-check and frozen identities")
+    elif norm_policy != "stock" or norm_source is not None or modeling_source is not None:
+        raise ValueError("Unexpected reference normalization identity")
     args._trial_stage = "integrity"
     manifest_hash = verify_manifest(args.model_path, args.manifest, args.model_revision, model_id)
     args._trial_stage = "workload"
@@ -305,6 +315,17 @@ def run(args: argparse.Namespace) -> dict:
         from transformers.integrations.finegrained_fp8 import FP8Linear
         fp8_loading = inspect_reference_fp8(model, torch, FP8Linear, expected_names)
         fp8_loading["config_adaptation"] = adaptation
+    norm_session = None
+    if norm_policy != "stock":
+        args._trial_stage = "reference_normalization"
+        if __package__:
+            from . import reference_rmsnorm
+        else:
+            import reference_rmsnorm
+        expected_source = Path(__file__).with_name("reference_rmsnorm.py").resolve()
+        if Path(reference_rmsnorm.__file__).resolve() != expected_source:
+            raise ValueError("Reference normalization import escaped the trial source")
+        norm_session = reference_rmsnorm.install(model, config, norm_source, modeling_source)
     args._trial_stage = "result_metadata"
     model.eval()
     result = {
@@ -345,6 +366,9 @@ def run(args: argparse.Namespace) -> dict:
 
     def finalize(record):
         args._trial_stage = "finalization"
+        if norm_session is not None:
+            record["reference_normalization"] = norm_session.check()
+            record["reference_implementation"] = record["reference_normalization"]["label"]
         if reference_kernel is not None:
             if __package__:
                 from .fp8_reference import recheck_reference_kernel
@@ -399,6 +423,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model-id", choices=MODEL_IDS, default=MODEL_ID)
     parser.add_argument("--fp8-kernel-revision")
     parser.add_argument("--fp8-kernel-sha256")
+    parser.add_argument("--reference-rmsnorm-policy",
+                        choices=("stock", "fixed-pairwise-fp32-v1"), default="stock")
+    parser.add_argument("--reference-rmsnorm-sha256")
+    parser.add_argument("--reference-modeling-sha256")
     parser.add_argument("--device-model", required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--workload", type=Path, required=True)

@@ -105,3 +105,31 @@ def test_fp8_preview_propagates_explicit_profile_and_frozen_kernel(tmp_path, mon
     monkeypatch.setattr(sys, "argv", argv[:-5] + ["--dry-run"])
     with pytest.raises(SystemExit):
         launch.main()
+
+
+def test_fixed_reference_policy_frozen_in_both_trials_and_validator(tmp_path, monkeypatch, capsys):
+    from examples.qwen38_text.profiles import FP8_MODEL_ID, precision
+    from examples.qwen38_text.reference_rmsnorm import POLICY
+
+    argv = args(tmp_path)
+    workload_path = tmp_path / "workload.json"
+    workload = json.loads(workload_path.read_text())
+    workload.update(model_id=FP8_MODEL_ID, precision=precision(FP8_MODEL_ID))
+    workload_path.write_text(json.dumps(workload))
+    argv += ["--model-id", FP8_MODEL_ID, "--fp8-kernel-revision", "b" * 40,
+             "--fp8-kernel-sha256", "c" * 64, "--reference-rmsnorm-policy", POLICY,
+             "--reference-rmsnorm-sha256", "d" * 64, "--reference-modeling-sha256", "e" * 64,
+             "--dry-run"]
+    monkeypatch.setattr(sys, "argv", argv)
+    assert launch.main() == 0
+    spec = json.loads(capsys.readouterr().out)
+    for key in ("baseline_command", "candidate_command", "validation_command"):
+        command = spec[key]
+        for flag, value in (("--reference-rmsnorm-policy", POLICY),
+                            ("--reference-rmsnorm-sha256", "d" * 64),
+                            ("--reference-modeling-sha256", "e" * 64)):
+            assert command[command.index(flag) + 1] == value
+    argv[argv.index("--reference-rmsnorm-policy") + 1] = "stock"
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit):
+        launch.main()

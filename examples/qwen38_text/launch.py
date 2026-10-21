@@ -21,6 +21,10 @@ def main():
     parser.add_argument("--model-id", choices=MODEL_IDS, default=BF16_MODEL_ID)
     parser.add_argument("--fp8-kernel-revision")
     parser.add_argument("--fp8-kernel-sha256")
+    parser.add_argument("--reference-rmsnorm-policy",
+                        choices=("stock", "fixed-pairwise-fp32-v1"), default="stock")
+    parser.add_argument("--reference-rmsnorm-sha256")
+    parser.add_argument("--reference-modeling-sha256")
     parser.add_argument("--device-model", required=True)
     parser.add_argument("--qualification-scope", default="reference_self_check",
                         choices=("reference_self_check", "native_text_smoke"))
@@ -58,6 +62,19 @@ def main():
                     "--fp8-kernel-sha256", args.fp8_kernel_sha256)
     elif args.fp8_kernel_revision or args.fp8_kernel_sha256:
         parser.error("BF16 cannot declare an FP8 reference kernel")
+    norm_args = ()
+    if args.reference_rmsnorm_policy != "stock":
+        from examples.qwen38_text.trial import HEX64
+        if (native or args.model_id != FP8_MODEL_ID
+                or any(not isinstance(value, str) or not HEX64.fullmatch(value)
+                       for value in (args.reference_rmsnorm_sha256,
+                                     args.reference_modeling_sha256))):
+            parser.error("Fixed normalization requires FP8 self-check and frozen source digests")
+        norm_args = ("--reference-rmsnorm-policy", args.reference_rmsnorm_policy,
+                     "--reference-rmsnorm-sha256", args.reference_rmsnorm_sha256,
+                     "--reference-modeling-sha256", args.reference_modeling_sha256)
+    elif args.reference_rmsnorm_sha256 is not None or args.reference_modeling_sha256 is not None:
+        parser.error("Stock normalization cannot declare fixed-policy source identities")
     example = Path(__file__).resolve().parent
     trial = (sys.executable, str(example / "trial.py"),
              "--model-path", str(args.model_path.resolve()),
@@ -77,11 +94,11 @@ def main():
         candidate = (sys.executable, str(example / "native_trial.py")) + trial[2:] + (
             "--engine-repo", str(args.candidate_repo.resolve()),
         )
-    baseline += fp8_args
+    baseline += fp8_args + norm_args
     if not native:
-        candidate += fp8_args
+        candidate += fp8_args + norm_args
     validator += ("--qualification-scope", args.qualification_scope,
-                  "--model-id", args.model_id) + fp8_args
+                  "--model-id", args.model_id) + fp8_args + norm_args
     spec = RunSpec(
         repo=str(args.repo.resolve()), repo_type="nano_vllm", backend="cuda",
         candidate_repo=str(args.candidate_repo.resolve()) if native else None,

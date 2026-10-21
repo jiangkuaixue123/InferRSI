@@ -187,7 +187,7 @@ def validate_reference_kernel(record, revision, snapshot):
     return kernel
 
 
-def reference_adaptation_contract(model_path, manifest):
+def authenticated_reference_metadata(model_path, manifest):
     """Independently derive identities from frozen-manifest-authenticated metadata."""
     if model_path is None:
         raise ValueError("FP8 validation requires checkpoint metadata")
@@ -208,6 +208,11 @@ def reference_adaptation_contract(model_path, manifest):
         if hashlib.sha256(payload).hexdigest() != item["sha256"] or len(payload) != item["size"]:
             raise ValueError("Reference metadata differs from frozen manifest")
         metadata[name] = require_object(json.loads(payload))
+    return metadata
+
+
+def reference_adaptation_contract(model_path, manifest):
+    metadata = authenticated_reference_metadata(model_path, manifest)
     config = metadata["config.json"]
     validate_config(config, FP8_MODEL_ID)
     weights = require_object(metadata["model.safetensors.index.json"]["weight_map"])
@@ -246,9 +251,91 @@ def validate_adaptation_record(loading, contract):
         raise ValueError("Reference adaptation/module identity differs from authenticated metadata")
 
 
+def normalization_contract(config, source_sha256, modeling_sha256):
+    """Validator-side derivation; never use adapter output as the module oracle."""
+    require_digest(source_sha256)
+    require_digest(modeling_sha256)
+    adapter = Path(__file__).with_name("reference_rmsnorm.py")
+    if hashlib.sha256(adapter.read_bytes()).hexdigest() != source_sha256:
+        raise ValueError("Frozen reference normalization source mismatch")
+    text = require_object(config.get("text_config"))
+    layers = text.get("num_hidden_layers")
+    width, head = text.get("hidden_size"), text.get("head_dim")
+    heads, kv_heads = text.get("num_attention_heads"), text.get("num_key_value_heads")
+    eps, kinds = text.get("rms_norm_eps"), text.get("layer_types")
+    if (config.get("model_type") != "qwen3_5"
+            or any(type(n) is not int or n <= 0 for n in (layers, width, head, heads, kv_heads))
+            or type(eps) not in (int, float) or not math.isfinite(eps) or eps <= 0
+            or not isinstance(kinds, list) or len(kinds) != layers
+            or any(kind not in ("linear_attention", "full_attention") for kind in kinds)):
+        raise ValueError("Invalid normalization metadata")
+    expected = {"model.language_model.norm": (width, None)}
+    for index, kind in enumerate(kinds):
+        prefix = f"model.language_model.layers.{index}"
+        expected[prefix + ".input_layernorm"] = (width, None)
+        expected[prefix + ".post_attention_layernorm"] = (width, None)
+        if kind == "full_attention":
+            expected[prefix + ".self_attn.q_norm"] = (head, heads)
+            expected[prefix + ".self_attn.k_norm"] = (head, kv_heads)
+    identity = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":"),
+                                         allow_nan=False).encode()).hexdigest()
+    return {"identity": {"policy": "fixed-pairwise-fp32-v1", "version": 1,
+                         "scope": "all_text_plain_rmsnorm",
+                         "label": "transformers_fp8_with_fixed_pairwise_fp32_rmsnorm",
+                         "source_sha256": source_sha256, "modeling_source_sha256": modeling_sha256,
+                         "adapter_import": {"path": "examples/qwen38_text/reference_rmsnorm.py",
+                                            "sha256": source_sha256},
+                         "config_sha256": identity,
+                         "reduction": "last_dim_fixed_pairwise_elementwise_add_fp32",
+                         "materialization": "original_bfloat16_after_zero_centered_weight"},
+            "modules": expected, "eps": eps}
+
+
+def validate_normalization_record(record, contract):
+    if contract is None:
+        if "reference_normalization" in record or "reference_implementation" in record:
+            raise ValueError("Undeclared reference normalization policy")
+        return
+    policy = require_object(record.get("reference_normalization"))
+    if (type(policy.get("version")) is not int
+            or any(policy.get(key) != value for key, value in contract["identity"].items())
+            or record.get("reference_implementation") != contract["identity"]["label"]
+            or policy.get("parameters_preserved") is not True
+            or policy.get("state_keys_preserved") is not True):
+        raise ValueError("Reference normalization policy identity mismatch")
+    modules = policy.get("modules")
+    if not isinstance(modules, list) or len(modules) != len(contract["modules"]):
+        raise ValueError("Reference normalization module coverage missing")
+    seen = set()
+    for module in modules:
+        require_object(module)
+        name = require_string(module.get("name"))
+        if name in seen or name not in contract["modules"]:
+            raise ValueError("Reference normalization module set mismatch")
+        seen.add(name)
+        width, heads = contract["modules"][name]
+        if (type(module.get("width")) is not int or module["width"] != width
+                or type(module.get("eps")) not in (int, float) or module["eps"] != contract["eps"]
+                or module.get("weight_dtype") != "bfloat16"
+                or type(module.get("calls")) is not int or module["calls"] <= 0):
+            raise ValueError("Reference normalization module execution mismatch")
+        require_digest(module.get("weight_sha256_fp32"))
+        shapes = module.get("input_shapes")
+        if not isinstance(shapes, list) or not shapes:
+            raise ValueError("Reference normalization input shape evidence missing")
+        for shape in shapes:
+            if (not isinstance(shape, list) or any(type(n) is not int or n <= 0 for n in shape)
+                    or len(shape) != (3 if heads is None else 4)
+                    or shape[0] != 1 or shape[-1] != width
+                    or heads is not None and shape[-2] != heads):
+                raise ValueError("Reference normalization input shape mismatch")
+
+
 def validate(run_dir, workload_path, manifest_path, max_nrmse, min_top1, rms_floor,
              qualification_scope="reference_self_check", model_id=BF16_MODEL_ID,
-             fp8_kernel_revision=None, fp8_kernel_sha256=None, model_path=None):
+             fp8_kernel_revision=None, fp8_kernel_sha256=None, model_path=None,
+             reference_rmsnorm_policy="stock", reference_rmsnorm_sha256=None,
+             reference_modeling_sha256=None):
     import numpy as np
 
     for number in (max_nrmse, min_top1, rms_floor):
@@ -271,6 +358,16 @@ def validate(run_dir, workload_path, manifest_path, max_nrmse, min_top1, rms_flo
         require_digest(fp8_kernel_revision, r"[0-9a-f]{40}")
         require_digest(fp8_kernel_sha256)
     adaptation_contract = reference_adaptation_contract(model_path, manifest) if fp8 else None
+    norm_contract = None
+    if reference_rmsnorm_policy == "fixed-pairwise-fp32-v1":
+        if not fp8 or native:
+            raise ValueError("Fixed normalization is scoped to FP8 reference self-check")
+        metadata = authenticated_reference_metadata(model_path, manifest)
+        norm_contract = normalization_contract(metadata["config.json"], reference_rmsnorm_sha256,
+                                               reference_modeling_sha256)
+    elif (reference_rmsnorm_policy != "stock" or reference_rmsnorm_sha256 is not None
+          or reference_modeling_sha256 is not None):
+        raise ValueError("Unexpected reference normalization identity")
     if spec.get("model", None if fp8 else model_id) != model_id:
         raise ValueError("RunSpec model identity differs from requested profile")
     if native:
@@ -320,6 +417,7 @@ def validate(run_dir, workload_path, manifest_path, max_nrmse, min_top1, rms_flo
     traces = {}
     environment = None
     reference_kernel = None
+    norm_weights = None
     candidate_role = "nanovllm_qwen38" if native else "transformers_cached"
     for side, implementation in (("baseline", "transformers_full"), ("candidate", candidate_role)):
         wanted = {f"trial-{index:03d}" for index in range(1, count + 1)}
@@ -338,6 +436,14 @@ def validate(run_dir, workload_path, manifest_path, max_nrmse, min_top1, rms_flo
             if record.get("implementation") != implementation:
                 raise ValueError("incorrect reference implementation role")
             check_precision(record, model_id)
+            validate_normalization_record(record, norm_contract)
+            if norm_contract is not None:
+                observed_weights = {item["name"]: item["weight_sha256_fp32"]
+                                    for item in record["reference_normalization"]["modules"]}
+                if norm_weights is None:
+                    norm_weights = observed_weights
+                elif observed_weights != norm_weights:
+                    raise ValueError("Reference normalization weights changed across trials")
             policy = NATIVE_POLICY if native and side == "candidate" else REFERENCE_POLICY
             if fp8:
                 policy = ({**policy, "fp8_linear": "triton_block_fp8"}
@@ -445,6 +551,10 @@ def main():
     parser.add_argument("--model-id", choices=MODEL_IDS, default=BF16_MODEL_ID)
     parser.add_argument("--fp8-kernel-revision")
     parser.add_argument("--fp8-kernel-sha256")
+    parser.add_argument("--reference-rmsnorm-policy",
+                        choices=("stock", "fixed-pairwise-fp32-v1"), default="stock")
+    parser.add_argument("--reference-rmsnorm-sha256")
+    parser.add_argument("--reference-modeling-sha256")
     parser.add_argument("--model-path", type=Path)
     for name in ("run-dir", "workload", "manifest", "output"):
         parser.add_argument("--" + name, required=True, type=Path)
@@ -457,7 +567,8 @@ def main():
         result = validate(args.run_dir, args.workload, args.manifest,
                           args.max_nrmse, args.min_top1, args.rms_floor, args.qualification_scope,
                           args.model_id, args.fp8_kernel_revision, args.fp8_kernel_sha256,
-                          args.model_path)
+                          args.model_path, args.reference_rmsnorm_policy,
+                          args.reference_rmsnorm_sha256, args.reference_modeling_sha256)
     except (OSError, ValueError, KeyError, TypeError, ImportError, zipfile.BadZipFile) as exc:
         # Do not echo exception strings, which may contain private runtime paths.
         result = {"verdict": "INCONCLUSIVE", "qualification_scope": args.qualification_scope,
