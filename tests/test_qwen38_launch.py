@@ -144,3 +144,35 @@ def test_fixed_reference_policy_frozen_in_reference_roles(tmp_path, monkeypatch,
     monkeypatch.setattr(sys, "argv", argv)
     with pytest.raises(SystemExit):
         launch.main()
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_canonical_delta_routes_reference_roles_only(tmp_path, monkeypatch, capsys, native):
+    from examples.qwen38_text.profiles import FP8_MODEL_ID, precision
+    argv = args(tmp_path)
+    workload = Path(argv[argv.index("--workload") + 1])
+    document = json.loads(workload.read_text())
+    document["model_id"] = FP8_MODEL_ID
+    document["precision"] = precision(FP8_MODEL_ID)
+    workload.write_text(json.dumps(document))
+    argv += ["--model-id", FP8_MODEL_ID, "--fp8-kernel-revision", "b" * 40,
+             "--fp8-kernel-sha256", "c" * 64,
+             "--reference-rmsnorm-policy", "fixed-pairwise-fp32-v1",
+             "--reference-rmsnorm-sha256", "d" * 64, "--reference-modeling-sha256", "e" * 64,
+             "--reference-delta-policy", "canonical-recurrent-fp32-v1",
+             "--reference-delta-sha256", "f" * 64, "--dry-run"]
+    if native:
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        argv += ["--qualification-scope", "native_text_smoke", "--candidate-repo", str(engine)]
+    monkeypatch.setattr(sys, "argv", argv)
+    assert launch.main() == 0
+    spec = json.loads(capsys.readouterr().out)
+    for key in ("baseline_command", "candidate_command", "validation_command"):
+        assert ("--reference-delta-policy" in spec[key]) == (
+            not native or key != "candidate_command"
+        )
+        assert ("f" * 64 in spec[key]) == (not native or key != "candidate_command")
+    argv[argv.index("--reference-rmsnorm-policy") + 1] = "stock"
+    with pytest.raises(SystemExit):
+        launch.main()

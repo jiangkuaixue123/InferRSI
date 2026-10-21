@@ -24,6 +24,9 @@ def main():
     parser.add_argument("--reference-rmsnorm-policy",
                         choices=("stock", "fixed-pairwise-fp32-v1"), default="stock")
     parser.add_argument("--reference-rmsnorm-sha256")
+    parser.add_argument("--reference-delta-policy",
+                        choices=("stock", "canonical-recurrent-fp32-v1"), default="stock")
+    parser.add_argument("--reference-delta-sha256")
     parser.add_argument("--reference-modeling-sha256")
     parser.add_argument("--device-model", required=True)
     parser.add_argument("--qualification-scope", default="reference_self_check",
@@ -75,6 +78,16 @@ def main():
                      "--reference-modeling-sha256", args.reference_modeling_sha256)
     elif args.reference_rmsnorm_sha256 is not None or args.reference_modeling_sha256 is not None:
         parser.error("Stock normalization cannot declare fixed-policy source identities")
+    delta_args = ()
+    if args.reference_delta_policy != "stock":
+        if (args.reference_rmsnorm_policy != "fixed-pairwise-fp32-v1"
+                or not isinstance(args.reference_delta_sha256, str)
+                or not HEX64.fullmatch(args.reference_delta_sha256)):
+            parser.error("Canonical Delta requires fixed FP8 normalization and adapter digest")
+        delta_args = ("--reference-delta-policy", args.reference_delta_policy,
+                      "--reference-delta-sha256", args.reference_delta_sha256)
+    elif args.reference_delta_sha256 is not None:
+        parser.error("Stock Delta cannot declare a policy source identity")
     example = Path(__file__).resolve().parent
     trial = (sys.executable, str(example / "trial.py"),
              "--model-path", str(args.model_path.resolve()),
@@ -94,11 +107,11 @@ def main():
         candidate = (sys.executable, str(example / "native_trial.py")) + trial[2:] + (
             "--engine-repo", str(args.candidate_repo.resolve()),
         )
-    baseline += fp8_args + norm_args
+    baseline += fp8_args + norm_args + delta_args
     if not native:
-        candidate += fp8_args + norm_args
+        candidate += fp8_args + norm_args + delta_args
     validator += ("--qualification-scope", args.qualification_scope,
-                  "--model-id", args.model_id) + fp8_args + norm_args
+                  "--model-id", args.model_id) + fp8_args + norm_args + delta_args
     spec = RunSpec(
         repo=str(args.repo.resolve()), repo_type="nano_vllm", backend="cuda",
         candidate_repo=str(args.candidate_repo.resolve()) if native else None,

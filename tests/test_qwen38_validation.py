@@ -707,3 +707,122 @@ def test_native_fixed_reference_policy_is_role_bound(normalized_native_bundle, m
     path.write_text(json.dumps(record))
     code, result = native_validator_subprocess(bundle, extra)
     assert code == 2 and result["verdict"] == "INCONCLUSIVE"
+
+
+def prepare_delta_bundle(bundle, native=False):
+    from examples.qwen38_text import reference_delta
+    from examples.qwen38_text.fp8_reference import adapt_reference_config
+    from examples.qwen38_text.validate import delta_contract, normalization_contract
+
+    bundle, flags = prepare_normalized_bundle(bundle, native=native)
+    run, workload, manifest_path = bundle
+    config_path = manifest_path.parent / "model-metadata/config.json"
+    config = json.loads(config_path.read_text())
+    config["text_config"].update(
+        linear_num_key_heads=1,
+        linear_num_value_heads=3,
+        linear_key_head_dim=4,
+        linear_value_head_dim=4,
+        linear_conv_kernel_dim=4,
+    )
+    config_path.write_text(json.dumps(config))
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0].update(sha256=digest(config_path), size=config_path.stat().st_size)
+    manifest_path.write_text(json.dumps(manifest))
+    index = json.loads(config_path.with_name("model.safetensors.index.json").read_text())
+    adaptation = adapt_reference_config(
+        config, index, {"model.language_model.layers.0.mlp.gate_proj"}
+    )[1]
+    contract = delta_contract(config, digest(reference_delta.__file__), "e" * 64)
+    steps = sum(case["max_steps"] for case in json.loads(workload.read_text())["cases"])
+    case_count = len(json.loads(workload.read_text())["cases"])
+    for side in ("baseline", "candidate"):
+        path = run / side / "trial-001/result.json"
+        record = json.loads(path.read_text())
+        record["manifest_sha256"] = digest(manifest_path)
+        if side == "baseline" or not native:
+            norm = normalization_contract(
+                config, record["reference_normalization"]["source_sha256"], "e" * 64
+            )
+            record["reference_normalization"].update(norm["identity"])
+            record["fp8_loading"]["config_adaptation"] = adaptation
+            redirected = steps if side == "baseline" else case_count
+            record["reference_delta"] = {
+                **contract["identity"],
+                "parameters_preserved": True,
+                "state_keys_preserved": True,
+                "modules": [
+                    {
+                        "name": name,
+                        **dimensions,
+                        "calls": steps,
+                        "redirected_chunk_calls": redirected,
+                        "direct_recurrent_calls": steps - redirected,
+                        "input_shapes": [[1, 2, 8]],
+                    }
+                    for name, dimensions in contract["modules"].items()
+                ],
+            }
+            record["reference_implementation"] = reference_delta.LABEL
+        path.write_text(json.dumps(record))
+    return bundle, (*flags, "--reference-delta-policy", reference_delta.POLICY,
+                    "--reference-delta-sha256", digest(reference_delta.__file__))
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "none",
+        "missing",
+        "wrong_name",
+        "wrong_source",
+        "zero_calls",
+        "wrong_branch",
+        "missing_metadata",
+        "changed_metadata",
+        "candidate_spoof",
+    ],
+)
+def test_actual_validator_delta_contract_and_roles(native_bundle, native, mutation):
+    bundle, flags = prepare_delta_bundle(native_bundle, native=native)
+    code, result = native_validator_subprocess(bundle, flags)
+    assert code == 0 and result["verdict"] == "PASS"  # Synthetic evidence only.
+    if mutation == "none":
+        return
+    run, _, manifest = bundle
+    if mutation.endswith("metadata"):
+        metadata = manifest.parent / "model-metadata/config.json"
+        if mutation == "missing_metadata":
+            metadata.unlink()
+        else:
+            metadata.write_text(metadata.read_text() + " ")
+    else:
+        path = (
+            run
+            / ("candidate" if mutation == "candidate_spoof" else "baseline")
+            / "trial-001/result.json"
+        )
+        record = json.loads(path.read_text())
+        if mutation == "candidate_spoof":
+            baseline = json.loads((run / "baseline/trial-001/result.json").read_text())
+            record["reference_delta"] = baseline["reference_delta"]
+            record["reference_implementation"] = baseline["reference_implementation"]
+            if not native:
+                record["reference_delta"]["policy"] = "stock"
+        elif mutation == "missing":
+            record.pop("reference_delta")
+        elif mutation == "wrong_source":
+            record["reference_delta"]["source_sha256"] = "0" * 64
+        else:
+            first = record["reference_delta"]["modules"][0]
+            first.update(
+                {
+                    "wrong_name": {"name": "wrong_same_count"},
+                    "zero_calls": {"calls": 0},
+                    "wrong_branch": {"redirected_chunk_calls": 0},
+                }[mutation]
+            )
+        path.write_text(json.dumps(record))
+    code, result = native_validator_subprocess(bundle, flags)
+    assert code == 2 and result["verdict"] == "INCONCLUSIVE"

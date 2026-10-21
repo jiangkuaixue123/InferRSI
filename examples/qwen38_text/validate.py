@@ -291,7 +291,7 @@ def normalization_contract(config, source_sha256, modeling_sha256):
             "modules": expected, "eps": eps}
 
 
-def validate_normalization_record(record, contract):
+def validate_normalization_record(record, contract, implementation_label=None):
     if contract is None:
         if "reference_normalization" in record or "reference_implementation" in record:
             raise ValueError("Undeclared reference normalization policy")
@@ -299,7 +299,8 @@ def validate_normalization_record(record, contract):
     policy = require_object(record.get("reference_normalization"))
     if (type(policy.get("version")) is not int
             or any(policy.get(key) != value for key, value in contract["identity"].items())
-            or record.get("reference_implementation") != contract["identity"]["label"]
+            or record.get("reference_implementation") != (
+                implementation_label or contract["identity"]["label"])
             or policy.get("parameters_preserved") is not True
             or policy.get("state_keys_preserved") is not True):
         raise ValueError("Reference normalization policy identity mismatch")
@@ -331,11 +332,117 @@ def validate_normalization_record(record, contract):
                 raise ValueError("Reference normalization input shape mismatch")
 
 
-def validate(run_dir, workload_path, manifest_path, max_nrmse, min_top1, rms_floor,
-             qualification_scope="reference_self_check", model_id=BF16_MODEL_ID,
-             fp8_kernel_revision=None, fp8_kernel_sha256=None, model_path=None,
-             reference_rmsnorm_policy="stock", reference_rmsnorm_sha256=None,
-             reference_modeling_sha256=None):
+def delta_contract(config, source_sha256, modeling_sha256):
+    """Derive complete linear module identities independently from authenticated config."""
+    require_digest(source_sha256)
+    require_digest(modeling_sha256)
+    if digest(Path(__file__).with_name("reference_delta.py")) != source_sha256:
+        raise ValueError("Frozen reference Delta source mismatch")
+    text = require_object(config.get("text_config"))
+    count, kinds = text.get("num_hidden_layers"), text.get("layer_types")
+    fields = {"hidden_size": "hidden_size", "num_k_heads": "linear_num_key_heads",
+              "num_v_heads": "linear_num_value_heads", "head_k_dim": "linear_key_head_dim",
+              "head_v_dim": "linear_value_head_dim", "conv_kernel_size": "linear_conv_kernel_dim"}
+    dimensions = {name: text.get(key) for name, key in fields.items()}
+    if (config.get("model_type") != "qwen3_5" or type(count) is not int or count <= 0
+            or not isinstance(kinds, list) or len(kinds) != count
+            or any(kind not in ("linear_attention", "full_attention") for kind in kinds)
+            or any(type(x) is not int or x <= 0 for x in dimensions.values())):
+        raise ValueError("Invalid reference Delta metadata")
+    modules = {f"model.language_model.layers.{i}.linear_attn": {"layer_idx": i, **dimensions}
+               for i, kind in enumerate(kinds) if kind == "linear_attention"}
+    if not modules:
+        raise ValueError("Missing reference Delta coverage")
+    return {
+        "modules": modules,
+        "identity": {
+            "policy": "canonical-recurrent-fp32-v1",
+            "version": 1,
+            "scope": "all_text_linear_attention",
+            "label": ("transformers_fp8_with_fixed_pairwise_fp32_rmsnorm"
+                      "_and_canonical_recurrent_delta"),
+            "source_sha256": source_sha256,
+            "modeling_source_sha256": modeling_sha256,
+            "adapter_import": {
+                "path": "examples/qwen38_text/reference_delta.py",
+                "sha256": source_sha256,
+            },
+            "config_sha256": hashlib.sha256(
+                json.dumps(config, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+            ).hexdigest(),
+            "execution": "original_recurrent_for_chunk_and_incremental_calls",
+            "original_recurrent_unchanged": True,
+        },
+    }
+
+
+def validate_delta_record(record, contract, cases):
+    if contract is None:
+        if "reference_delta" in record:
+            raise ValueError("Undeclared reference Delta policy")
+        return
+    policy = require_object(record.get("reference_delta"))
+    if (
+        type(policy.get("version")) is not int
+        or any(policy.get(k) != v for k, v in contract["identity"].items())
+        or record.get("reference_implementation") != contract["identity"]["label"]
+        or policy.get("original_recurrent_unchanged") is not True
+        or policy.get("parameters_preserved") is not True
+        or policy.get("state_keys_preserved") is not True
+    ):
+        raise ValueError("Reference Delta identity mismatch")
+    modules = policy.get("modules")
+    if not isinstance(modules, list) or len(modules) != len(contract["modules"]):
+        raise ValueError("Reference Delta module coverage missing")
+    count = sum(case["max_steps"] for case in cases)
+    redirected = count if record.get("implementation") == "transformers_full" else len(cases)
+    seen = set()
+    for module in modules:
+        require_object(module)
+        name = require_string(module.get("name"))
+        if name in seen or name not in contract["modules"]:
+            raise ValueError("Reference Delta complete module set mismatch")
+        seen.add(name)
+        if any(
+            type(module.get(k)) is not int or module[k] != v
+            for k, v in contract["modules"][name].items()
+        ) or any(
+            type(module.get(k)) is not int or module[k] != v
+            for k, v in {
+                "calls": count,
+                "redirected_chunk_calls": redirected,
+                "direct_recurrent_calls": count - redirected,
+            }.items()
+        ):
+            raise ValueError("Reference Delta execution coverage mismatch")
+        shapes = module.get("input_shapes")
+        if not isinstance(shapes, list) or not shapes:
+            raise ValueError("Reference Delta input evidence missing")
+        for shape in shapes:
+            if (not isinstance(shape, list) or len(shape) != 3
+                    or any(type(n) is not int or n <= 0 for n in shape)
+                    or shape[0] != 1 or shape[-1] != contract["modules"][name]["hidden_size"]):
+                raise ValueError("Reference Delta input shape mismatch")
+
+
+def validate(
+    run_dir,
+    workload_path,
+    manifest_path,
+    max_nrmse,
+    min_top1,
+    rms_floor,
+    qualification_scope="reference_self_check",
+    model_id=BF16_MODEL_ID,
+    fp8_kernel_revision=None,
+    fp8_kernel_sha256=None,
+    model_path=None,
+    reference_rmsnorm_policy="stock",
+    reference_rmsnorm_sha256=None,
+    reference_modeling_sha256=None,
+    reference_delta_policy="stock",
+    reference_delta_sha256=None,
+):
     import numpy as np
 
     for number in (max_nrmse, min_top1, rms_floor):
@@ -368,6 +475,15 @@ def validate(run_dir, workload_path, manifest_path, max_nrmse, min_top1, rms_flo
     elif (reference_rmsnorm_policy != "stock" or reference_rmsnorm_sha256 is not None
           or reference_modeling_sha256 is not None):
         raise ValueError("Unexpected reference normalization identity")
+    recurrent_contract = None
+    if reference_delta_policy == "canonical-recurrent-fp32-v1":
+        if norm_contract is None:
+            raise ValueError("Canonical Delta requires the fixed FP8 normalization policy")
+        recurrent_contract = delta_contract(
+            metadata["config.json"], reference_delta_sha256, reference_modeling_sha256
+        )
+    elif reference_delta_policy != "stock" or reference_delta_sha256 is not None:
+        raise ValueError("Unexpected reference Delta identity")
     if spec.get("model", None if fp8 else model_id) != model_id:
         raise ValueError("RunSpec model identity differs from requested profile")
     if native:
@@ -437,7 +553,14 @@ def validate(run_dir, workload_path, manifest_path, max_nrmse, min_top1, rms_flo
                 raise ValueError("incorrect reference implementation role")
             check_precision(record, model_id)
             role_norm_contract = None if native and side == "candidate" else norm_contract
-            validate_normalization_record(record, role_norm_contract)
+            role_delta_contract = None if native and side == "candidate" else recurrent_contract
+            label = (
+                role_delta_contract["identity"]["label"]
+                if role_delta_contract is not None
+                else None
+            )
+            validate_normalization_record(record, role_norm_contract, label)
+            validate_delta_record(record, role_delta_contract, cases)
             if role_norm_contract is not None:
                 observed_weights = {item["name"]: item["weight_sha256_fp32"]
                                     for item in record["reference_normalization"]["modules"]}
@@ -555,6 +678,12 @@ def main():
     parser.add_argument("--reference-rmsnorm-policy",
                         choices=("stock", "fixed-pairwise-fp32-v1"), default="stock")
     parser.add_argument("--reference-rmsnorm-sha256")
+    parser.add_argument(
+        "--reference-delta-policy",
+        choices=("stock", "canonical-recurrent-fp32-v1"),
+        default="stock",
+    )
+    parser.add_argument("--reference-delta-sha256")
     parser.add_argument("--reference-modeling-sha256")
     parser.add_argument("--model-path", type=Path)
     for name in ("run-dir", "workload", "manifest", "output"):
@@ -569,7 +698,8 @@ def main():
                           args.max_nrmse, args.min_top1, args.rms_floor, args.qualification_scope,
                           args.model_id, args.fp8_kernel_revision, args.fp8_kernel_sha256,
                           args.model_path, args.reference_rmsnorm_policy,
-                          args.reference_rmsnorm_sha256, args.reference_modeling_sha256)
+                          args.reference_rmsnorm_sha256, args.reference_modeling_sha256,
+                          args.reference_delta_policy, args.reference_delta_sha256)
     except (OSError, ValueError, KeyError, TypeError, ImportError, zipfile.BadZipFile) as exc:
         # Do not echo exception strings, which may contain private runtime paths.
         result = {"verdict": "INCONCLUSIVE", "qualification_scope": args.qualification_scope,

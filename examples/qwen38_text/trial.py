@@ -58,7 +58,7 @@ REQUIRED = {
 TRIAL_STAGES = frozenset({
     "setup", "integrity", "workload", "kernel", "imports", "device", "tokenization",
     "config_adaptation", "checkpoint_load", "loading_info", "fp8_inspection",
-    "reference_normalization", "result_metadata", "logits", "finalization",
+    "reference_normalization", "reference_delta", "result_metadata", "logits", "finalization",
 })
 
 
@@ -221,6 +221,14 @@ def run(args: argparse.Namespace) -> dict:
             raise ValueError("Fixed reference normalization requires FP8 and frozen identities")
     elif norm_policy != "stock" or norm_source is not None or modeling_source is not None:
         raise ValueError("Unexpected reference normalization identity")
+    delta_policy = getattr(args, "reference_delta_policy", "stock")
+    delta_source = getattr(args, "reference_delta_sha256", None)
+    if delta_policy == "canonical-recurrent-fp32-v1":
+        if (norm_policy != "fixed-pairwise-fp32-v1"
+                or not isinstance(delta_source, str) or not HEX64.fullmatch(delta_source)):
+            raise ValueError("Canonical Delta requires fixed FP8 normalization and adapter digest")
+    elif delta_policy != "stock" or delta_source is not None:
+        raise ValueError("Unexpected reference Delta identity")
     args._trial_stage = "integrity"
     manifest_hash = verify_manifest(args.model_path, args.manifest, args.model_revision, model_id)
     args._trial_stage = "workload"
@@ -364,11 +372,16 @@ def run(args: argparse.Namespace) -> dict:
             from provenance import capture_sources
         result["source_provenance"] = capture_sources(excluded_run_dir=args.output.parents[2])
 
+    delta_session = None
+
     def finalize(record):
         args._trial_stage = "finalization"
         if norm_session is not None:
             record["reference_normalization"] = norm_session.check()
             record["reference_implementation"] = record["reference_normalization"]["label"]
+        if delta_session is not None:
+            record["reference_delta"] = delta_session.check()
+            record["reference_implementation"] = record["reference_delta"]["label"]
         if reference_kernel is not None:
             if __package__:
                 from .fp8_reference import recheck_reference_kernel
@@ -376,12 +389,27 @@ def run(args: argparse.Namespace) -> dict:
                 from fp8_reference import recheck_reference_kernel
             recheck_reference_kernel(record["reference_kernel"])
 
-    args._trial_stage = "logits"
-    return write_traces(
-        result, args.output, cases, tokens,
-        lambda prompt, continuation: collect_logits(model, torch, prompt, continuation, args.mode),
-        finalize,
-    )
+    try:
+        if delta_policy != "stock":
+            args._trial_stage = "reference_delta"
+            if __package__:
+                from . import reference_delta
+            else:
+                import reference_delta
+            expected_delta = Path(__file__).with_name("reference_delta.py").resolve()
+            if Path(reference_delta.__file__).resolve() != expected_delta:
+                raise ValueError("Reference Delta import escaped the trial source")
+            delta_session = reference_delta.install(model, config, delta_source, modeling_source)
+        args._trial_stage = "logits"
+        return write_traces(
+            result, args.output, cases, tokens,
+            lambda prompt, continuation: collect_logits(
+                model, torch, prompt, continuation, args.mode),
+            finalize,
+        )
+    finally:
+        if delta_session is not None:
+            delta_session.close()
 
 
 def write_traces(result, output, cases, tokens, collect, finalize=None):
@@ -426,6 +454,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reference-rmsnorm-policy",
                         choices=("stock", "fixed-pairwise-fp32-v1"), default="stock")
     parser.add_argument("--reference-rmsnorm-sha256")
+    parser.add_argument("--reference-delta-policy",
+                        choices=("stock", "canonical-recurrent-fp32-v1"), default="stock")
+    parser.add_argument("--reference-delta-sha256")
     parser.add_argument("--reference-modeling-sha256")
     parser.add_argument("--device-model", required=True)
     parser.add_argument("--manifest", type=Path, required=True)

@@ -255,3 +255,36 @@ validator authenticates policy evidence on reference roles only, rejects any
 native candidate claiming reference-policy evidence, and requires unchanged norm
 weight fingerprints across reference baseline repetitions (both sides for
 self-check). BF16 and undeclared policy identities remain rejected.
+
+### Explicit canonical recurrence reference
+
+The optional `--reference-delta-policy canonical-recurrent-fp32-v1` policy requires
+FP8 and the explicit fixed plain RMSNorm policy above. Supply the frozen
+`--reference-delta-sha256` alongside the existing normalization and modeling
+source digests. The adapter must be included in the executed source snapshot and
+validator bundle as `reference_delta.py`; the original Transformers files remain
+unchanged.
+
+This reference routes the original chunk Delta call site to the pinned original
+recurrent function with unchanged inputs, initial-state and return-state flags,
+and normalization semantics. Incremental calls retain that same original
+recurrent function. The reference has an explicit combined implementation label;
+it must not be described as stock Transformers. It is a correctness reference,
+not a reference throughput optimization or proof of a full-model repair.
+
+The adapter authenticates the complete config-derived linear-module set,
+observes each module's actual full or cached branch, preserves Parameter objects
+and state keys, and restores the original chunk entry and its own observation
+hooks on close. Evidence includes complete per-module call counts, branch counts,
+input shapes, source/modeling fingerprints and a separate `reference_delta`
+policy record. The validator independently derives module names and dimensions
+from authenticated metadata and verifies exact workload-derived call counts.
+Missing, forged or undeclared records remain `INCONCLUSIVE`.
+
+For `reference_self_check`, both full and cached reference roles receive this
+policy. For `native_text_smoke`, only the full reference baseline and validator
+receive its flags; the native candidate must not declare the reference policy.
+BF16, implicit policies and missing identities are rejected. Existing numeric
+gates are unchanged. CPU tests and isolated mathematical diagnostics cannot
+qualify the model: activation requires reviewed source, a frozen prerequisite
+and a new complete acceptance run with explicit oracle identity.
