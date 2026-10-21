@@ -301,7 +301,7 @@ def test_actual_wrapper_tampering_rejected_before_and_after_install(monkeypatch,
     try:
         with monkeypatch.context() as patch:
             if tamper == "forward":
-                patch.setattr(outer, "forward", lambda *a, **kw: None)
+                patch.setitem(vars(outer), "forward", lambda *a, **kw: None)
             elif tamper == "hook":
                 patch.setitem(outer._forward_hooks, -1, lambda *a: None)
             elif tamper == "compiled":
