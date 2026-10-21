@@ -12,6 +12,33 @@ from examples.qwen38_text import trial
 REVISION = "a" * 40
 
 
+@pytest.mark.parametrize("mode,model_id,source", [
+    ("cached", "Qwen/Qwen3.8-27B-FP8", "a" * 64),
+    ("full", "Qwen/Qwen3.8-27B", "a" * 64),
+    ("full", "Qwen/Qwen3.8-27B-FP8", None),
+])
+def test_native_fixed_reference_rejects_wrong_mode_precision_or_identity(mode, model_id, source):
+    args = SimpleNamespace(qualification_scope="native_text_smoke", mode=mode,
+                           model_id=model_id, reference_rmsnorm_policy="fixed-pairwise-fp32-v1",
+                           reference_rmsnorm_sha256=source, reference_modeling_sha256="b" * 64)
+    with pytest.raises(ValueError):
+        trial.run(args)
+
+
+def test_native_fixed_reference_full_reaches_integrity_guard(monkeypatch):
+    args = SimpleNamespace(qualification_scope="native_text_smoke", mode="full",
+                           model_id="Qwen/Qwen3.8-27B-FP8",
+                           reference_rmsnorm_policy="fixed-pairwise-fp32-v1",
+                           reference_rmsnorm_sha256="a" * 64, reference_modeling_sha256="b" * 64,
+                           model_path="unused", manifest="unused", model_revision=REVISION)
+    def refuse_unverified_bytes(*_args):
+        raise ValueError("synthetic integrity boundary")
+    monkeypatch.setattr(trial, "verify_manifest", refuse_unverified_bytes)
+    with pytest.raises(ValueError, match="synthetic integrity boundary"):
+        trial.run(args)
+    assert args._trial_stage == "integrity"
+
+
 def write_json(path, value):
     path.write_text(json.dumps(value))
 

@@ -360,8 +360,8 @@ def validate(run_dir, workload_path, manifest_path, max_nrmse, min_top1, rms_flo
     adaptation_contract = reference_adaptation_contract(model_path, manifest) if fp8 else None
     norm_contract = None
     if reference_rmsnorm_policy == "fixed-pairwise-fp32-v1":
-        if not fp8 or native:
-            raise ValueError("Fixed normalization is scoped to FP8 reference self-check")
+        if not fp8:
+            raise ValueError("Fixed reference normalization requires FP8")
         metadata = authenticated_reference_metadata(model_path, manifest)
         norm_contract = normalization_contract(metadata["config.json"], reference_rmsnorm_sha256,
                                                reference_modeling_sha256)
@@ -436,8 +436,9 @@ def validate(run_dir, workload_path, manifest_path, max_nrmse, min_top1, rms_flo
             if record.get("implementation") != implementation:
                 raise ValueError("incorrect reference implementation role")
             check_precision(record, model_id)
-            validate_normalization_record(record, norm_contract)
-            if norm_contract is not None:
+            role_norm_contract = None if native and side == "candidate" else norm_contract
+            validate_normalization_record(record, role_norm_contract)
+            if role_norm_contract is not None:
                 observed_weights = {item["name"]: item["weight_sha256_fp32"]
                                     for item in record["reference_normalization"]["modules"]}
                 if norm_weights is None:

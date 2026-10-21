@@ -224,11 +224,14 @@ Freeze the new sources, environment, workload and gates before GPU experiments.
 
 ### Explicit fixed-row reference normalization
 
-An acceptance-scoped FP8 `reference_self_check` may opt into
+An acceptance-scoped FP8 `reference_self_check` or `native_text_smoke` may opt into
 `--reference-rmsnorm-policy fixed-pairwise-fp32-v1`, together with
 `--reference-rmsnorm-sha256 '<adapter_sha256>'` and
 `--reference-modeling-sha256 '<original_transformers_modeling_sha256>'`.
-Freeze these flags on both trial modes and the validator before execution.
+For self-check, freeze these flags on both reference trial modes and the validator.
+For native comparison, freeze them on the full-prefix reference baseline and the
+validator only; the native candidate receives no reference normalization or
+reference kernel flags. Cached reference mode is rejected in native comparison.
 The adapter and validator source bundle must include `reference_rmsnorm.py`.
 Stock reference behavior remains the default; a fixed-policy run is labelled
 `transformers_fp8_with_fixed_pairwise_fp32_rmsnorm` in its evidence.
@@ -244,7 +247,11 @@ actual adapter import origin and both source fingerprints. The validator derives
 its expected module set independently from authenticated checkpoint metadata.
 
 This is a new explicit oracle policy, not evidence that normalization or model
-quality has passed. Existing numerical gates and complete self-check workloads
+quality has passed. Existing numerical gates and complete frozen workloads
 still apply. Other operator shapes may still differ; operator invariance alone
 cannot qualify a model. Native comparisons require a separately accepted oracle
-identity and are intentionally unavailable for this policy in the current slice.
+identity and a new freeze after the reference self-check is qualified. The
+validator authenticates policy evidence on reference roles only, rejects any
+native candidate claiming reference-policy evidence, and requires unchanged norm
+weight fingerprints across reference baseline repetitions (both sides for
+self-check). BF16 and undeclared policy identities remain rejected.

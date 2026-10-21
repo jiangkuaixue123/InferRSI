@@ -107,7 +107,8 @@ def test_fp8_preview_propagates_explicit_profile_and_frozen_kernel(tmp_path, mon
         launch.main()
 
 
-def test_fixed_reference_policy_frozen_in_both_trials_and_validator(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("native", [False, True])
+def test_fixed_reference_policy_frozen_in_reference_roles(tmp_path, monkeypatch, capsys, native):
     from examples.qwen38_text.profiles import FP8_MODEL_ID, precision
     from examples.qwen38_text.reference_rmsnorm import POLICY
 
@@ -120,15 +121,25 @@ def test_fixed_reference_policy_frozen_in_both_trials_and_validator(tmp_path, mo
              "--fp8-kernel-sha256", "c" * 64, "--reference-rmsnorm-policy", POLICY,
              "--reference-rmsnorm-sha256", "d" * 64, "--reference-modeling-sha256", "e" * 64,
              "--dry-run"]
+    if native:
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        argv += ["--qualification-scope", "native_text_smoke", "--candidate-repo", str(engine)]
     monkeypatch.setattr(sys, "argv", argv)
     assert launch.main() == 0
     spec = json.loads(capsys.readouterr().out)
     for key in ("baseline_command", "candidate_command", "validation_command"):
         command = spec[key]
+        if native and key == "candidate_command":
+            assert not any(flag.startswith("--reference-") for flag in command)
+            assert "--fp8-kernel-revision" not in command
+            assert command[1].endswith("native_trial.py")
+            continue
         for flag, value in (("--reference-rmsnorm-policy", POLICY),
                             ("--reference-rmsnorm-sha256", "d" * 64),
                             ("--reference-modeling-sha256", "e" * 64)):
             assert command[command.index(flag) + 1] == value
+    assert spec["baseline_command"][spec["baseline_command"].index("--mode") + 1] == "full"
     argv[argv.index("--reference-rmsnorm-policy") + 1] = "stock"
     monkeypatch.setattr(sys, "argv", argv)
     with pytest.raises(SystemExit):

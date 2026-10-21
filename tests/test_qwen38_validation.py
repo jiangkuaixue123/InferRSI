@@ -563,6 +563,15 @@ def test_fp8_reference_requires_authenticated_metadata(native_bundle, mutation, 
 
 @pytest.fixture
 def normalized_reference_bundle(native_bundle):
+    return prepare_normalized_bundle(native_bundle)
+
+
+@pytest.fixture
+def normalized_native_bundle(native_bundle):
+    return prepare_normalized_bundle(native_bundle, native=True)
+
+
+def prepare_normalized_bundle(native_bundle, native=False):
     import copy
 
     from examples.qwen38_text.fp8_reference import adapt_reference_config
@@ -573,7 +582,9 @@ def normalized_reference_bundle(native_bundle):
     run, _workload, manifest_path = native_bundle
     spec_path = run / "run.lock.json"
     spec = json.loads(spec_path.read_text())
-    spec.update(comparison_scope="reference_self_check", candidate_repo=None)
+    scope = "native_text_smoke" if native else "reference_self_check"
+    if not native:
+        spec.update(comparison_scope=scope, candidate_repo=None)
     spec_path.write_text(json.dumps(spec))
     model_path = manifest_path.parent / "model-metadata"
     config_path = model_path / "config.json"
@@ -592,7 +603,7 @@ def normalized_reference_bundle(native_bundle):
     contract = normalization_contract(config, digest(source), "e" * 64)
     baseline_path = run / "baseline/trial-001/result.json"
     record = json.loads(baseline_path.read_text())
-    record.update(qualification_scope="reference_self_check", manifest_sha256=digest(manifest_path),
+    record.update(qualification_scope=scope, manifest_sha256=digest(manifest_path),
                   reference_implementation=LABEL)
     record["fp8_loading"]["config_adaptation"] = adaptation
     record["reference_normalization"] = {
@@ -602,10 +613,15 @@ def normalized_reference_bundle(native_bundle):
                     for name in sorted(contract["modules"])],
     }
     baseline_path.write_text(json.dumps(record))
-    candidate = copy.deepcopy(record)
-    candidate["implementation"] = "transformers_cached"
-    (run / "candidate/trial-001/result.json").write_text(json.dumps(candidate))
-    return native_bundle, ("--qualification-scope", "reference_self_check",
+    candidate_path = run / "candidate/trial-001/result.json"
+    if native:
+        candidate = json.loads(candidate_path.read_text())
+        candidate["manifest_sha256"] = digest(manifest_path)
+    else:
+        candidate = copy.deepcopy(record)
+        candidate["implementation"] = "transformers_cached"
+    candidate_path.write_text(json.dumps(candidate))
+    return native_bundle, ("--qualification-scope", scope,
                           "--model-id", "Qwen/Qwen3.8-27B-FP8",
                           "--fp8-kernel-revision", kernel["revision"],
                           "--fp8-kernel-sha256", kernel["snapshot_sha256"],
@@ -647,5 +663,47 @@ def test_real_validator_cli_rejects_missing_or_forged_normalization(
             else:
                 record["reference_normalization"]["modules"][0]["calls"] = 0
         mutate_case(bundle, alter)
+    code, result = native_validator_subprocess(bundle, extra)
+    assert code == 2 and result["verdict"] == "INCONCLUSIVE"
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing_baseline", "forged_baseline", "candidate_policy", "candidate_label",
+    "baseline_weight_drift", "missing_metadata", "stock_relabel",
+])
+def test_native_fixed_reference_policy_is_role_bound(normalized_native_bundle, mutation):
+    import shutil
+
+    bundle, extra = normalized_native_bundle
+    run = bundle[0]
+    # Two repetitions ensure baseline weight stability is checked across rounds.
+    spec_path = run / "run.lock.json"
+    spec = json.loads(spec_path.read_text())
+    spec["repetitions"] = 2
+    spec_path.write_text(json.dumps(spec))
+    for side in ("baseline", "candidate"):
+        shutil.copytree(run / side / "trial-001", run / side / "trial-002")
+    code, result = native_validator_subprocess(bundle, extra)
+    assert code == 0 and result["verdict"] == "PASS"  # Synthetic role evidence only.
+    path = run / "baseline/trial-002/result.json"
+    record = json.loads(path.read_text())
+    if mutation == "missing_baseline":
+        record.pop("reference_normalization")
+    elif mutation == "forged_baseline":
+        record["reference_normalization"]["source_sha256"] = "0" * 64
+    elif mutation == "baseline_weight_drift":
+        record["reference_normalization"]["modules"][0]["weight_sha256_fp32"] = "0" * 64
+    elif mutation in {"candidate_policy", "candidate_label"}:
+        baseline = record
+        path = run / "candidate/trial-002/result.json"
+        record = json.loads(path.read_text())
+        key = ("reference_normalization" if mutation == "candidate_policy"
+               else "reference_implementation")
+        record[key] = baseline[key]
+    elif mutation == "missing_metadata":
+        (bundle[2].parent / "model-metadata/config.json").unlink()
+    else:
+        extra = extra[:extra.index("--reference-rmsnorm-policy")]
+    path.write_text(json.dumps(record))
     code, result = native_validator_subprocess(bundle, extra)
     assert code == 2 and result["verdict"] == "INCONCLUSIVE"

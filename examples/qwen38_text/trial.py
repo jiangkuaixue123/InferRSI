@@ -215,10 +215,10 @@ def run(args: argparse.Namespace) -> dict:
     norm_source = getattr(args, "reference_rmsnorm_sha256", None)
     modeling_source = getattr(args, "reference_modeling_sha256", None)
     if norm_policy == "fixed-pairwise-fp32-v1":
-        if (model_id != FP8_MODEL_ID or scope != "reference_self_check"
+        if (model_id != FP8_MODEL_ID
                 or any(not isinstance(value, str) or not HEX64.fullmatch(value)
                        for value in (norm_source, modeling_source))):
-            raise ValueError("Fixed normalization requires FP8 self-check and frozen identities")
+            raise ValueError("Fixed reference normalization requires FP8 and frozen identities")
     elif norm_policy != "stock" or norm_source is not None or modeling_source is not None:
         raise ValueError("Unexpected reference normalization identity")
     args._trial_stage = "integrity"

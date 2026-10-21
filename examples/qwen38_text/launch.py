@@ -65,11 +65,11 @@ def main():
     norm_args = ()
     if args.reference_rmsnorm_policy != "stock":
         from examples.qwen38_text.trial import HEX64
-        if (native or args.model_id != FP8_MODEL_ID
+        if (args.model_id != FP8_MODEL_ID
                 or any(not isinstance(value, str) or not HEX64.fullmatch(value)
                        for value in (args.reference_rmsnorm_sha256,
                                      args.reference_modeling_sha256))):
-            parser.error("Fixed normalization requires FP8 self-check and frozen source digests")
+            parser.error("Fixed reference normalization requires FP8 and frozen source digests")
         norm_args = ("--reference-rmsnorm-policy", args.reference_rmsnorm_policy,
                      "--reference-rmsnorm-sha256", args.reference_rmsnorm_sha256,
                      "--reference-modeling-sha256", args.reference_modeling_sha256)
