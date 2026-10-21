@@ -3,6 +3,7 @@
 import inspect
 import re
 from pathlib import Path
+from types import CodeType
 
 if __package__:
     from .reference_rmsnorm import config_identity, digest
@@ -71,6 +72,96 @@ def expected_modules(config):
     }
 
 
+def _nested_code(function, qualname):
+    """Find the actual code object owned by an installed, known factory."""
+    pending = [function.__code__]
+    matches = []
+    while pending:
+        code = pending.pop()
+        if code.co_qualname == qualname:
+            matches.append(code)
+        pending.extend(x for x in code.co_consts if isinstance(x, CodeType))
+    if len(matches) != 1:
+        raise ValueError("Unknown reference Delta wrapper source")
+    return matches[0]
+
+
+def authenticate_function(function, name, modeling):
+    """Authenticate known wrappers; return the body for identity checks, never execution.
+
+    kernels Func -> Transformers fallback -> original modeling function is the
+    only accepted wrapped path. Calling the original outer object preserves its
+    argument filtering and fallback behavior. Re-run this check after execution.
+    """
+    original = function
+    if not inspect.isfunction(function):
+        import importlib
+
+        from torch import nn
+        from transformers.integrations import hub_kernels
+
+        layer = importlib.import_module("kernels.layer.layer")
+        cls = type(function)
+        forward = cls.forward if isinstance(function, nn.Module) else None
+        if (
+            cls.__qualname__ != "_create_func_module.<locals>.Func"
+            or cls.__module__ != layer.__name__
+            or cls.__bases__ != (nn.Module,)
+            or not inspect.isfunction(forward)
+            or forward.__code__ is not _nested_code(
+                layer._create_func_module, "_create_func_module.<locals>.Func.forward"
+            )
+            or any(key in vars(function) for key in ("forward", "_call_impl", "_wrapped_call_impl"))
+            or function._compiled_call_impl is not None
+            or cls.__call__ is not nn.Module.__call__
+            or cls._call_impl is not nn.Module._call_impl
+            or cls._wrapped_call_impl is not nn.Module._wrapped_call_impl
+            or hasattr(function, "_hf_hook")
+            or function._forward_hooks
+            or function._forward_pre_hooks
+            or function._backward_hooks
+            or function._backward_pre_hooks
+            or function._parameters
+            or function._buffers
+            or function._modules
+        ):
+            raise ValueError("Unexpected reference Delta Func wrapper")
+        closure = inspect.getclosurevars(forward).nonlocals
+        if set(closure) != {"func"}:
+            raise ValueError("Unexpected reference Delta Func closure")
+        function = closure["func"]
+        if (
+            not inspect.isfunction(function)
+            or function.__code__ is not _nested_code(
+                hub_kernels.use_kernel_func_from_hub_with_fallback,
+                "use_kernel_func_from_hub_with_fallback.<locals>.decorator.<locals>.wrapped",
+            )
+        ):
+            raise ValueError("Unexpected reference Delta fallback wrapper")
+        closure = inspect.getclosurevars(function).nonlocals
+        body = closure.get("torch_function")
+        if (
+            not inspect.isfunction(body)
+            or closure.get("implementation") is not body
+            or closure.get("is_new_implementation") is not False
+            or getattr(function, "__wrapped__", None) is not body
+            or closure.get("applicable_params") != tuple(inspect.signature(body).parameters)
+        ):
+            raise ValueError("Reference Delta fallback is not the original Torch function")
+        function = body
+    if (
+        not inspect.isfunction(function)
+        or hasattr(function, "__wrapped__")
+        or function.__name__ != name
+        or function.__qualname__ != name
+        or Path(function.__code__.co_filename).resolve() != Path(modeling.__file__).resolve()
+        or function.__globals__ is not vars(modeling)
+    ):
+        raise ValueError("Unexpected reference Delta function replacement")
+    # Keep both the body and its code identity: a callable can be mutated in place.
+    return original, function, function.__code__
+
+
 def install(model, config, source_sha256, modeling_sha256):
     if (
         any(
@@ -92,12 +183,7 @@ def install(model, config, source_sha256, modeling_sha256):
     ):
         raise ValueError("Unexpected reference Delta class forward replacement")
     for name in ("torch_chunk_gated_delta_rule", "torch_recurrent_gated_delta_rule", "l2norm"):
-        function = inspect.unwrap(getattr(modeling, name))
-        if (
-            function.__name__ != name
-            or Path(function.__code__.co_filename).resolve() != Path(modeling.__file__).resolve()
-        ):
-            raise ValueError("Unexpected reference Delta function replacement")
+        authenticate_function(getattr(modeling, name), name, modeling)
     expected = expected_modules(config)
     found = {
         name: module
@@ -136,6 +222,14 @@ class PolicySession:
         self.recurrent = modeling.torch_recurrent_gated_delta_rule
         self.l2norm = modeling.l2norm
         self.forward = modeling.Qwen3_5GatedDeltaNet.forward
+        self.function_identities = {
+            name: authenticate_function(function, name, modeling)
+            for name, function in (
+                ("torch_chunk_gated_delta_rule", self.chunk),
+                ("torch_recurrent_gated_delta_rule", self.recurrent),
+                ("l2norm", self.l2norm),
+            )
+        }
         self.parameters = dict(model.named_parameters())
         self.parameter_contract = {
             name: (tuple(p.shape), p.dtype, p.device) for name, p in self.parameters.items()
@@ -229,6 +323,10 @@ class PolicySession:
             or self.modeling.l2norm is not self.l2norm
         ):
             raise ValueError("Reference Delta policy identity or execution changed")
+        for name, identity in self.function_identities.items():
+            actual = authenticate_function(identity[0], name, self.modeling)
+            if any(x is not y for x, y in zip(actual, identity)):
+                raise ValueError("Reference Delta original function identity changed")
         params = dict(self.model.named_parameters())
         if (
             set(params) != set(self.parameters)

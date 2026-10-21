@@ -252,3 +252,78 @@ def test_real_module_cpu_branch_counts_and_parameter_guard():
             session.check()
     finally:
         session.close()
+
+
+def test_foreign_function_is_not_authenticated_by_name():
+    from types import SimpleNamespace
+
+    def torch_recurrent_gated_delta_rule():
+        return None
+
+    with pytest.raises(ValueError, match="function replacement"):
+        policy.authenticate_function(
+            torch_recurrent_gated_delta_rule,
+            "torch_recurrent_gated_delta_rule",
+            SimpleNamespace(__file__=__file__),
+        )
+
+
+def test_actual_kernel_wrappers_authenticate_without_unwrapping_execution():
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from transformers.models.qwen3_5 import modeling_qwen3_5 as modeling
+
+    for name in ("torch_chunk_gated_delta_rule", "torch_recurrent_gated_delta_rule", "l2norm"):
+        outer = getattr(modeling, name)
+        identity = policy.authenticate_function(outer, name, modeling)
+        assert identity[0] is outer
+        assert identity[1].__name__ == name
+        assert identity[2] is identity[1].__code__
+
+
+@pytest.mark.parametrize(
+    "tamper", ["forward", "hook", "compiled", "implementation", "new_implementation", "wrapped"]
+)
+def test_actual_wrapper_tampering_rejected_before_and_after_install(monkeypatch, tamper):
+    import inspect
+
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from transformers.models.qwen3_5 import modeling_qwen3_5 as modeling
+
+    outer = modeling.torch_recurrent_gated_delta_rule
+    if not isinstance(outer, torch.nn.Module):
+        pytest.skip("This regression requires the installed kernels Func integration")
+    root = make_tree(torch, modeling, config(1), "meta")
+    session = policy.install(
+        root, config(1), policy.digest(policy.__file__), policy.digest(modeling.__file__)
+    )
+    try:
+        with monkeypatch.context() as patch:
+            if tamper == "forward":
+                patch.setattr(outer, "forward", lambda *a, **kw: None)
+            elif tamper == "hook":
+                patch.setitem(outer._forward_hooks, -1, lambda *a: None)
+            elif tamper == "compiled":
+                patch.setattr(outer, "_compiled_call_impl", lambda *a, **kw: None)
+            else:
+                wrapped = inspect.getclosurevars(type(outer).forward).nonlocals["func"]
+                cells = dict(zip(wrapped.__code__.co_freevars, wrapped.__closure__))
+                if tamper == "wrapped":
+                    patch.setattr(wrapped, "__wrapped__", lambda: None)
+                else:
+                    key = (
+                        "implementation" if tamper == "implementation" else "is_new_implementation"
+                    )
+                    patch.setattr(
+                        cells[key],
+                        "cell_contents",
+                        (lambda: None) if key == "implementation" else True,
+                    )
+            with pytest.raises(ValueError, match="reference Delta|Reference Delta"):
+                policy.authenticate_function(outer, "torch_recurrent_gated_delta_rule", modeling)
+            with pytest.raises(ValueError, match="reference Delta|Reference Delta"):
+                session.check(require_calls=False)
+        session.check(require_calls=False)
+    finally:
+        session.close()
