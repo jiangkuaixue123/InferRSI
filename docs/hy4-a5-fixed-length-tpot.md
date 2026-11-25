@@ -360,3 +360,42 @@ The following supplementary service measurements used the same 20 request IDs, 1
 The installed CANN 9.3 aclnnGroupedMatmulSwigluQuantWeightNzV3 fused GMM1, clamped SwiGLU and MX quantization with cumulative counts. Its full chain took 44.61, 95.14, 130.47 and 157.03 microseconds on the same four geometries. All four were slower than the corresponding separate-operator controls. The alternate count encoding was also slower than its control. Fused output differed from the reference on active rows. That fusion was excluded from this serving trial.
 
 The formal twenty-request P50 changed from 3.7604 to 3.6825 ms/token. The greedy completions matched in 20/20 cases. The two runs delivered 3.982 and 3.982 tokens per draft round, with median client-estimated round durations of 16.76 and 16.43 ms, respectively. InferRSI skipped accuracy because the improvement fell below 3%. [Device comparison](https://github.com/InferMatrixLab/InferRSI/issues/613#issuecomment-7167617912) · [Per-request measurements](https://github.com/InferMatrixLab/InferRSI/issues/613#issuecomment-7167821136)
+
+## Combine replicated BF16 target attention and index input projections across decode batch sizes
+
+Three trained layers × four batch sizes × ten changing inputs reproduced every compared BF16 projection value. Mean isolated saving across the three checkpoint layers was B1 2.66 µs, B4 2.90 µs, B8 2.34 µs, B16 3.31 µs. The existing gather is unchanged. Source is operator-r43-layout-batched.log. Round 4 shared positions already cover C1. Its generalization matched all 32 changing-input graph cases at batch sizes 1, 4, 8 and 16. The controlled four-layer position and candidate preparation at larger batch sizes took B4 259.3 → 48.4 µs, B8 461.8 → 50.0 µs, B16 865.2 → 54.9 µs. Source is operator-r43-layout-batched.log.
+
+The following supplementary service measurements used the same 20 request IDs, 16,384 input tokens and 1,024 output tokens per request. Both services used the fixed decoding parameters. Positive percentages mean lower TPOT.
+
+| Clients | Parent P50 (ms/token) | Trial P50 (ms/token) | P50 improvement | Output tokens/s (parent → trial) | Peak overlapping decode intervals (parent → trial) | Exact greedy completions |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 23.1575 | 20.5222 | +11.38% | 151.99 → 147.93 | 4 → 4 | 3/20 |
+| 8 | 33.4082 | 37.1842 | -11.30% | 165.17 → 157.17 | 8 → 8 | 0/20 |
+| 16 | 74.3305 | 75.3198 | -1.33% | 168.54 → 165.89 | 16 → 16 | 3/20 |
+
+### A5 checks for broadening the existing decode paths
+
+All timings below are operator diagnostics. The service comparison uses the frozen 127K workload and the supplementary 16K multi-client workload.
+
+| Path | Batch 4 | Batch 8 | Batch 16 | Compared values |
+| --- | ---: | ---: | ---: | --- |
+| Round 4 verification positions across four layers | 259.3 → 48.4 µs | 461.8 → 50.0 µs | 865.2 → 54.9 µs | 32 graph replays at batch 1/4/8/16 covered reordered and padded positions. |
+| Round 9 packed sliding-window reads | 335.2 → 173.3 µs | 661.9 → 334.8 µs | 1313.8 → 667.9 µs | 24 graph replays on remapped native C8 pages matched every K/V operand and BF16 context. |
+| Round 10 packed rotary query, 4 heads | 21.3 → 13.9 µs | 23.3 → 17.0 µs | 28.6 → 22.8 µs | Tested ordinary and packed rotary with the same retained matrices. Six changing position sets per geometry matched exactly. |
+| Round 10 packed rotary query, 8 heads | 22.3 → 15.7 µs | 24.5 → 20.5 µs | 29.4 → 29.3 µs | Tested ordinary and packed rotary with the same retained matrices. Six changing position sets per geometry matched exactly. |
+| Round 19 registered Engram lookup | 3885.1 → 246.1 µs | 7248.1 → 190.0 µs | 12158.6 → 201.1 µs | 72 ragged and padded cases with four trained CPU tables matched the previous hashes and feature rows. At batch 1 the deployed parent already has direct lookup. |
+
+Round 22 rank-local vocabulary winner packing matched the full-vocabulary greedy result in all 72 graph cases at 1, 4, 7, 8, 13 and 16 requests. Tests included equal scores on different ranks, infinities and NaNs. The eight-rank packet layout was simulated on one NPU. End-to-end distributed timing is pending.
+
+The GMM1 and clamped SwiGLU comparison used four trained layers and expert histograms reconstructed from 105 captured six-token anchors in two other documents. Higher-batch histograms combined distinct recorded anchors. Activations were generated. Each size used its corresponding layer and eight route/activation cases.
+
+| Requests | Split GMM1/activation/GMM2 | Fused cumulative group list | Split with live row extent |
+| ---: | ---: | ---: | ---: |
+| 1 | 36.30 µs | 34.71 µs | 33.21 µs |
+| 4 | 76.47 µs | 78.48 µs | 73.17 µs |
+| 8 | 63.39 µs | 67.39 µs | 59.89 µs |
+| 16 | 95.72 µs | 101.76 µs | 92.12 µs |
+
+The fused operator changed some active FP8 bytes, E8M0 scales and BF16 down-projection outputs. The split operator with the live row extent matched all active outputs. It missed the formal latency gate in round 42 and gave mixed service results at larger batches. Round 43 starts directly from round 41.
+
+The formal twenty-request P50 changed from 3.7604 to 3.7094 ms/token. The greedy completions matched in 20/20 cases. The two runs delivered 3.982 and 3.982 tokens per draft round, with median client-estimated round durations of 16.76 and 16.62 ms, respectively. InferRSI skipped accuracy because the improvement fell below 3%. [Device comparison](https://github.com/InferMatrixLab/InferRSI/issues/613#issuecomment-7167970172) · [Per-request measurements](https://github.com/InferMatrixLab/InferRSI/issues/613#issuecomment-7168328742)
