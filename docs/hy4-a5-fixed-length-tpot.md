@@ -564,3 +564,32 @@ The combined R50 source passed 13 CPU-side regression cases in the pinned image.
 The R14 grouped CPU-hash transfer still has a single-client condition in the fallback used when direct registered-table reads cannot run. The deployed R19/R46 path already performs four registered-table reads for multi-client decode. The remaining singleton sparse-attention branch handles cache layouts outside the native-page batched path. R47–R50 use the request-indexed path on the deployed native pages. Neither residual guard alone establishes a performance bottleneck for this deployment.
 
 The formal twenty-request P50 changed from 3.6038 to 3.4900 ms/token. The greedy completions matched in 20/20 cases. The two runs delivered 3.982 and 3.982 tokens per draft round, with median client-estimated round durations of 16.13 and 15.62 ms, respectively. Same-service AIME scored 30/30 at concurrency sixteen. [Device comparison](https://github.com/InferMatrixLab/InferRSI/issues/613#issuecomment-7171852061) · [Per-request measurements](https://github.com/InferMatrixLab/InferRSI/issues/613#issuecomment-7172185235)
+
+## Prepare causal Hy4 draft attention logits across request batches
+
+The candidate starts from the selected R50 service. Direct draft-input staging matched all eleven live and padded buffers across 168 replays with both position layouts. Host enqueue improved in every case. Device replay with M-RoPE grew from 56.7 to 57.7 µs at B1 and from 73.7 to 100.6 µs with seven live requests in the eight-request graph. This version was excluded from the serving candidate. Three checkpoint draft layers at three tensor ranks reproduced every BF16 context and projected value in eight changing graph replays at B1/4/8/16. The chosen packing emits 6 key and 6 value copies per request in the producer and uses 32-row tiles. Complete times including the trained value projection were B1 129.14 to 98.08 µs, B4 403.83 to 339.41 µs, B8 715.21 to 541.80 µs, B16 1351.32 to 1016.77 µs.
+
+The following supplementary service measurements used the same 20 request IDs, 16,384 input tokens and 1,024 output tokens per request. Both services used the fixed decoding parameters. Positive percentages mean lower TPOT.
+
+| Clients | Parent P50 (ms/token) | Trial P50 (ms/token) | P50 improvement | Output tokens/s (parent → trial) | Peak overlapping decode intervals (parent → trial) | Exact greedy completions |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 12.1877 | 10.5725 | +13.25% | 250.07 → 256.48 | 4 → 4 | 2/20 |
+| 8 | 18.6473 | 18.8613 | -1.15% | 264.68 → 287.97 | 8 → 8 | 1/20 |
+| 16 | 42.7624 | 41.5154 | +2.92% | 273.23 → 268.85 | 16 → 16 | 10/20 |
+
+The private A5 GMM1 + clamped SwiGLU fused epilogue restored BF16 round-to-nearest-even for both GMM1 outputs before activation. The check used four checkpoint layers, route histograms from 105 held-out positions, and eight input patterns per batch. All E8M0 scales matched. The full path includes the following GMM2.
+
+| Requests | Checkpoint layer | Split path (µs) | Fused path (µs) | FP8 code differences | BF16 GMM2 differences |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1 | 33.14 | 34.68 | 1 | 227 |
+| 4 | 2 | 73.26 | 78.53 | 1 | 98 |
+| 8 | 20 | 60.95 | 67.84 | 0 | 0 |
+| 16 | 41 | 92.15 | 101.90 | 0 | 0 |
+
+The fused path was slower at all four sizes. B1 and B4 each changed one FP8 code across eight runs. The serving candidate retained the split path. Source for the experiment was the two arch35 epilogues in the pinned CANN SDK. The separately compiled kernel and tiling metadata were mounted only in device-comparison containers.
+
+A read-only comparison of the retained R50 and R46 concurrent completions removed tokens following the first configured EOS. Exact prefixes at C4/C8/C16 were 1/20, 0/20 and 0/20. Of the requests where both texts contained one unambiguous answer letter, the letters agreed in 6/6, 4/4 and 1/2. These counts describe paired outputs. No answer key was used. R50 separately passed all 30 AIME questions at C16.
+
+Seven CPU regression cases passed in the pinned image with the complete R51 source. The A5 comparisons above used the loaded checkpoint and captured graphs.
+
+The formal twenty-request P50 changed from 3.4900 to 3.4724 ms/token. The greedy completions matched in 20/20 cases. The two runs delivered 3.982 and 3.982 tokens per draft round, with median client-estimated round durations of 15.62 and 15.51 ms, respectively. InferRSI skipped accuracy because the improvement fell below 3%. [Device comparison](https://github.com/InferMatrixLab/InferRSI/issues/613#issuecomment-7172670847) · [Per-request measurements](https://github.com/InferMatrixLab/InferRSI/issues/613#issuecomment-7172975181)
