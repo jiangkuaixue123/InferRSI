@@ -1,0 +1,79 @@
++    # Keep a batch sibling's token across unrelated edits. A reissued card gets
++    # the new revision even if a previous set of choices eventually comes back.
++    issued = record["revision"]
++    for prior in record.get("open_questions", []):
++        if isinstance(prior, dict) and all(prior.get(key) == value for key, value in card.items()):
++            issued = prior.get("issued_revision", issued)
++            break
++    identity = _canonical([record["record_id"], issued, card])
++    digest = hashlib.sha256(identity.encode()).hexdigest()
++    return {**card, "id": f"{_QUESTION}{field['path']}:{digest}", "issued_revision": issued}
+ 
+ 
+ def _frozen_conflicts(record: dict, spec: dict, frozen: dict | None) -> list[dict]:
+@@ -533,6 +534,8 @@ def _service_quality_line(quality: dict, unit: str) -> str:
+         return f"{metric} {operator} {limit} {unit} (absolute threshold; {direction})"
+     tolerance = str(quality["tolerance"]).removesuffix(".0")
+     sign = "-" if higher else "+"
++    if unit in ("%", "percent"):
++        unit = "percentage point" if quality["tolerance"] == 1 else "percentage points"
+     return (f"{metric} {operator} baseline {metric} {sign} {tolerance} {unit} "
+             f"(baseline comparison; {direction}; reference: retained baseline score "
+             "for the current comparison epoch)")
+@@ -617,7 +620,7 @@ def evaluate(record: dict, spec: dict, *, frozen: dict | None = None) -> dict:
+         if missing:
+             lowest = min(field.get("batch", 1) for field in missing)
+             question_fields = [field for field in missing if field.get("batch", 1) == lowest]
+-    questions = [_question(record, spec, field) for field in question_fields]
++    questions = [_question(record, field) for field in question_fields]
+     blockers = []
+     for stage in BLOCKING_STAGES:
+         blocked_by = []
+@@ -717,8 +720,8 @@ def answer(record: dict, spec: dict, *, question_id: str, value: object = None,
+             raise IntakeError("already_answered",
+                               f"{question_id} was already recorded; re-evaluate for "
+                               "current questions")
+-        named = question_id[len(_QUESTION):] if question_id.startswith(_QUESTION) else None
+-        if named in _field_paths(spec):
++        prefix, separator, remainder = question_id.partition(":")
++        if prefix + separator == _QUESTION and remainder.partition(":")[0] in _field_paths(spec):
+             raise IntakeError("stale_answer",
+                               f"{question_id} is not open in the current record; re-evaluate")
+         raise IntakeError("unknown_question",
+@@ -740,8 +743,7 @@ def answer(record: dict, spec: dict, *, question_id: str, value: object = None,
+     if field is None:
+         raise IntakeError("unknown_question",
+                           f"{question_id} names a field outside {spec['task']}; re-evaluate")
+-    snapshot = _question(record, spec, field)["depends_on"]
+-    if snapshot != question.get("depends_on"):
++    if _question(record, field)["id"] != question_id:
+         raise IntakeError("stale_answer",
+                           f"{question_id} was asked before its dependencies changed; "
+                           "re-evaluate")
+diff --git a/src/inferrsi/apps/cli/task_intake.py b/src/inferrsi/apps/cli/task_intake.py
+index 1ee0ba44..39436337 100644
+--- a/src/inferrsi/apps/cli/task_intake.py
++++ b/src/inferrsi/apps/cli/task_intake.py
+@@ -196,8 +196,8 @@ def answer_command(args) -> dict:
+     spec = load_spec(record["task"])
+     record = intake.answer(record, spec, question_id=args.question,
+                            value=args.value, unknown=bool(args.unknown))
+-    return _evaluate_and_save(record_path, record, spec, args.frozen,
+-                              selecting_reference=args.question == f"q:{intake.REFERENCE}")
++    selected = record["fields"].get(intake.REFERENCE, {}).get("source") == f"answer:{args.question}"
++    return _evaluate_and_save(record_path, record, spec, args.frozen, selecting_reference=selected)
+ 
+ 
+ def summary_command(args) -> dict:
+diff --git a/src/inferrsi/harness/project.py b/src/inferrsi/harness/project.py
+index 8ef70563..ca788119 100644
+--- a/src/inferrsi/harness/project.py
++++ b/src/inferrsi/harness/project.py
+@@ -7,6 +7,7 @@ does not infer acceptance from natural language or launch any commands.
+ import json
+ import math
+ import shutil
++from decimal import Decimal
+ from pathlib import Path
+ from statistics import median
+ 

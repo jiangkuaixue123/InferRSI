@@ -1,0 +1,66 @@
+     view = intake.evaluate(record, spec)
+@@ -481,13 +485,13 @@ def test_selected_gate_imports_only_its_values_and_changed_file_reopens_card(tmp
+     cmd = ["task", "intake", "evaluate", "--record", str(record), "--json"]
+     assert cli.main([*cmd, "--task", "task-performance"]) == 0
+     capsys.readouterr()
+-
++    reference_card = card_id(task_intake.read_record(record), intake.REFERENCE)
+     answer = ["task", "intake", "answer", "--record", str(record), "--question",
+-              "q:acceptance.reference", "--value", str(gate), "--frozen", str(gate), "--json"]
++              reference_card, "--value", str(gate), "--frozen", str(gate), "--json"]
+     assert cli.main(answer) == 0
+     view = json.loads(capsys.readouterr().out)
+     assert view["fields"]["acceptance.metric_key"]["status"] == "confirmed"
+-    assert view["fields"][intake.REFERENCE]["source"] == "answer:q:acceptance.reference"
++    assert view["fields"][intake.REFERENCE]["source"] == "answer:" + reference_card
+     assert cli.main([*cmd, "--source", "frozen_gate", "--set",
+                      "acceptance.min_improvement_pct=99"]) == 0
+     assert json.loads(capsys.readouterr().out)["fields"]["acceptance.min_improvement_pct"][
+@@ -526,13 +530,15 @@ def test_user_can_replace_suggested_goal_and_settle_a_conflict():
+     record = intake.set_fields(record, spec, {"optimization.objective": "throughput"},
+                                source="repo_inspection")
+     record, _ = ask(record, spec)
+-    record = intake.answer(record, spec, question_id="q:optimization.objective", value="latency")
++    record = intake.answer(record, spec, question_id=card_id(record, "optimization.objective"),
++                           value="latency")
+     assert record["fields"]["optimization.objective"]["value"] == "latency"
+     assert record["fields"]["optimization.objective"]["status"] == "confirmed"
+     record = intake.set_fields(record, spec, {"optimization.objective": "memory"}, source="prompt")
+     record, view = ask(record, spec)
+     assert view["questions"][0]["field"] == "optimization.objective"
+-    record = intake.answer(record, spec, question_id="q:optimization.objective", value="latency")
++    record = intake.answer(record, spec, question_id=card_id(record, "optimization.objective"),
++                           value="latency")
+     assert record["fields"]["optimization.objective"]["status"] == "confirmed"
+ 
+ @pytest.mark.parametrize("path", ["protocol.target_value", "protocol.quality_limit",
+@@ -562,7 +568,7 @@ def test_brief_answer_must_match_the_current_issued_revision():
+     with pytest.raises(intake.IntakeError):
+         intake.answer(changed, spec, question_id=review, value="approve")
+     changed, _ = ask(changed, spec)
+-    changed = intake.answer(changed, spec, question_id="q:protocol.target_kind",
++    changed = intake.answer(changed, spec, question_id=card_id(changed, "protocol.target_kind"),
+                             value="relative_improvement_pct")
+     changed, next_view = ask(changed, spec)
+     assert "12%" in next_view["task_brief"]["performance_target"]
+@@ -584,7 +590,8 @@ def test_returned_brief_waits_for_edits_then_requires_new_review(reply):
+         intake.answer(record, spec, question_id=view["task_brief"]["id"], value="approve")
+     edited = intake.set_fields(record, spec, {"protocol.quality_limit": 2}, source="prompt")
+     edited, _ = ask(edited, spec)
+-    edited = intake.answer(edited, spec, question_id="q:protocol.quality_limit", value=2)
++    edited = intake.answer(edited, spec, question_id=card_id(edited, "protocol.quality_limit"),
++                          value=2)
+     assert intake.evaluate(edited, spec)["brief_review"] == "awaiting_confirmation"
+ 
+ 
+@@ -696,8 +703,9 @@ def test_loaded_approved_record_reopens_unusable_execution_values(project, tmp_p
+     assert "brief_decision" not in json.loads(path.read_text())
+     assert reopened["revision"] > record["revision"]
+     for key in ("environment.repetitions", "environment.max_minutes", "environment.rounds"):
++        token = card_id(task_intake.read_record(path), key)
+         assert cli.main(["task", "intake", "answer", "--record", str(path), "--json",
+-                         "--question", f"q:{key}", "--value", "1"]) == 0
++                         "--question", token, "--value", "1"]) == 0
+         view = json.loads(capsys.readouterr().out)
+     assert view["brief_review"] == "awaiting_confirmation"
+     assert not view["complete"]

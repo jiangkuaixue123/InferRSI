@@ -1,0 +1,68 @@
+@@ -127,7 +131,7 @@ For an issue, first record the user's reference, then include the same
+ user's selection. For example, after the user chooses the file on a card:
+ 
+ ```text
+-inferrsi task intake answer --record <record.json> --question q:acceptance.reference \
++inferrsi task intake answer --record <record.json> --question <returned-question-id> \
+     --value <gate.yaml> --frozen <gate.yaml>
+ ```
+ 
+@@ -212,7 +216,13 @@ rejection. A candidate rejection is `FAIL`, and a baseline rejection leaves
+ the comparison `INCONCLUSIVE`. A scored result also supplies the boolean
+ acceptance key and a numeric result under the approved quality metric
+ (JSON dotted paths are supported). A boolean metric on the acceptance key is
+-compared as 1 or 0. The independent final checks the approved absolute bound or
++compared as 1 or 0 when its approved unit is `boolean`. Numeric quality results
++declare their scale in the top-level `unit` field. Both campaign modes compare the
++score in the unit on the final card. The harness converts between `fraction` /
++`ratio` and `%` / `percent`; other units must match exactly. Missing or
++incompatible numeric units give `INCONCLUSIVE`. Service baseline tolerances
++are additive in the approved score unit. For percent scores, a tolerance
++of one permits a difference of one percentage point. The independent final checks the approved absolute bound or
+ relative improvement against the pinned baseline. For service reuse, the first
+ ranked objective names the final metric and the configuration supplies its
+ dataset, score key, threshold or allowed degradation, commands and sampling.
+diff --git a/plugins/inferrsi/skills/inferrsi/SKILL.md b/plugins/inferrsi/skills/inferrsi/SKILL.md
+index e6118cc2..5706acc5 100644
+--- a/plugins/inferrsi/skills/inferrsi/SKILL.md
++++ b/plugins/inferrsi/skills/inferrsi/SKILL.md
+@@ -144,7 +144,9 @@ they execute the submitted code, not an unrelated installed package or service.
+ For AB/BA, pass the approved dataset version and split as `--quality-benchmark`.
+ For a scored result, the quality script self-reports the corpus it evaluated in
+ the top-level `dataset` field. Harness checks the reported label against the
+-approved identity.
++approved identity. Include the score's `unit` on numeric quality receipts for
++both AB/BA and service reuse. Show the approved score scale and, for a service
++baseline tolerance on percent scores, the allowed difference in percentage points.
+ This command uses the same Harness controller as the packaged task path below.
+ 
+ Edit the returned working candidate. Submit each hypothesis and candidate with
+diff --git a/src/inferrsi/apps/cli/campaign_intake.py b/src/inferrsi/apps/cli/campaign_intake.py
+index 7cdf7b95..7c1183b8 100644
+--- a/src/inferrsi/apps/cli/campaign_intake.py
++++ b/src/inferrsi/apps/cli/campaign_intake.py
+@@ -44,6 +44,7 @@ def _execution(plan, args, staged):
+                 "acceptance.metric_unit": primary["unit"],
+                 "acceptance.direction": primary["direction"],
+                 "protocol.quality_metric": quality["key"],
++                "protocol.quality_unit": quality["unit"],
+                 "protocol.quality_benchmark": quality["dataset"],
+                 "protocol.quality_comparator": comparison,
+                 "protocol.quality_limit": quality["tolerance" if relative else "threshold"],
+@@ -133,8 +134,13 @@ def start(args, run_session):
+                 staged_args.session = Path(tmp) / "campaign"
+                 frozen = run_session(staged_args, initialize=lambda _, plan: {"plan": plan})
+                 plan = frozen["plan"]
+-                launch, expected = _execution(plan, args, staged_args.session)
+                 brief = gate["task_brief"]
++                if args.evaluation_mode == "abba":
++                    plan["evaluation_settings"]["quality_bound"] = {
++                        key: brief["conditions"]["protocol.quality_" + key]
++                        for key in ("metric", "comparator", "limit", "unit")
++                    }
++                launch, expected = _execution(plan, args, staged_args.session)
+                 conflicts = _conflicts(brief["conditions"], expected, args)
+                 if conflicts:
+                     return _blocked("launch_conflict", conflicts=conflicts)
+@@ -159,11 +165,6 @@ def _initialize(staged, destination, plan, record, gate):
+         primary = next(obj for obj in settings["objectives"] if obj["id"] == settings["ranking"][0])

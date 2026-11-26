@@ -1,0 +1,82 @@
++@pytest.mark.parametrize(("mode", "baseline", "limit", "score", "unit", "verdict"), [
++    ("absolute", 0.5, 1, 0.02, "fraction", "FAIL"),
++    ("absolute", 0.5, 1, 0.005, "fraction", "PASS"),
++    ("absolute", 0.5, 1, 0.005, None, "INCONCLUSIVE"),
++    ("absolute", 0.5, 1, 0.005, "tokens", "INCONCLUSIVE"),
++    ("baseline_comparison", 2, 1, 0.03, "fraction", "PASS"),
++    ("baseline_comparison", 2, 1, 0.0301, "fraction", "FAIL"),
++])
++def test_service_scores_in_the_approved_quality_unit(campaign, mode, baseline, limit,
++                                                     score, unit, verdict):
++    from inferrsi.apps.cli import task_intake
++    from tests.fixtures.campaign_intake import approved_start
++
++    config = settings()
++    quality = config["quality"]
++    quality.pop("threshold")
++    quality.update(mode=mode, direction="minimize", unit="%")
++    quality["tolerance" if mode == "baseline_comparison" else "threshold"] = limit
++    campaign["config"].write_text(json.dumps(config))
++    args = approved_start(campaign["start"])
++    gate, _ = task_intake.campaign_gate(Path(args[-1]))
++    assert gate["task_brief"]["campaign_launch"]["evaluation_settings"]["quality"]["unit"] == "%"
++    if mode == "baseline_comparison":
++        assert "1 percentage point " in gate["task_brief"]["quality_gate"]
++    changed = copy.deepcopy(config)
++    changed["quality"]["unit"] = "fraction"
++    campaign["config"].write_text(json.dumps(changed))
++    assert main(args) == 2
++    blocked = json.loads(campaign["capsys"].readouterr().out)
++    assert blocked["reason"] == "launch_conflict"
++    assert blocked["conflicts"] == [
++        {"field": "protocol.quality_unit", "approved": "%", "actual": "fraction"}]
++    campaign["config"].write_text(json.dumps(config))
++    assert main(args) == 0
++    campaign["capsys"].readouterr()
++    frozen = project_service.read(campaign["root"] / "plan.json")["evaluation_settings"]
++    receipt = {"dataset": "synthetic", "scorer": "exact-v1", "samples": 2,
++               "quality": baseline, "unit": "%"}
++    reference = project_service.quality_score(frozen, receipt)
++    receipt["quality"] = score
++    if unit is None:
++        del receipt["unit"]
++    else:
++        receipt["unit"] = unit
++    if verdict == "INCONCLUSIVE":
++        with pytest.raises(ValueError, match="quality_unit_mismatch"):
++            project_service.quality_score(frozen, receipt)
++    else:
++        normalized = project_service.quality_score(frozen, receipt)
++        assert project_service.quality_passed(frozen, normalized, reference) is (verdict == "PASS")
+diff --git a/tests/apps/test_task_intake.py b/tests/apps/test_task_intake.py
+index 4a9776b4..5fe29b42 100644
+--- a/tests/apps/test_task_intake.py
++++ b/tests/apps/test_task_intake.py
+@@ -52,6 +52,10 @@ def ask(record: dict, spec: dict, frozen: dict | None = None) -> tuple[dict, dic
+     return record, view
+ 
+ 
++def card_id(record, field):
++    return next(q["id"] for q in record["open_questions"] if q["field"] == field)
++
++
+ def batch_paths(spec: dict, batch: int) -> set[str]:
+     return {field["path"] for field in spec["fields"] if field.get("batch", 1) == batch}
+ 
+@@ -217,7 +221,7 @@ def test_metric_conflict_card_then_matching_issue_confirmation(tmp_path, capsys,
+     assert {opt["value"] for opt in card["options"]} == {"p95_ttft", "p99_ttft"}
+     assert call("evaluate", "--set", f"{metric}={selected}")["revision"] == view["revision"]
+     chosen = call("answer", "--question", card["id"], "--value", selected)
+-    assert chosen["fields"][metric] == {"value": selected, "source": f"answer:q:{metric}",
++    assert chosen["fields"][metric] == {"value": selected, "source": "answer:" + card["id"],
+                                         "status": "proposed"}
+     assert not any(q["field"] == metric for q in chosen["questions"])
+     issue = call("evaluate", "--source", "issue", "--set", f"{metric}={selected}",
+@@ -231,7 +235,7 @@ def test_mismatching_issue_reopens_an_explicit_card_choice():
+     record = build({intake.REFERENCE})
+     record, _ = ask(record, spec)
+     key = "acceptance.metric_key"
+-    record = intake.answer(record, spec, question_id=f"q:{key}", value="p95_ttft")
++    record = intake.answer(record, spec, question_id=card_id(record, key), value="p95_ttft")
+     record = intake.set_fields(record, spec, {key: "p99_ttft", intake.REFERENCE:
+                                ALL_VALUES[intake.REFERENCE]}, source="issue")

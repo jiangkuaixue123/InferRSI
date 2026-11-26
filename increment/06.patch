@@ -1,0 +1,84 @@
++    delta = Decimal(str(score)) - Decimal(str(reference))
++    return sign * delta >= -Decimal(str(config["tolerance"]))
+ 
+ 
+ def revision(source, includes):
+@@ -865,8 +868,6 @@ def execute(root, directory, plan, pending, deadline):
+         elif role == "final":
+             target = plan.get("performance_target")
+         if target and gate["passed"]:
+-            from .project import meets_target
+-
+             name = settings["ranking"][0]
+             objective = next(obj for obj in settings["objectives"] if obj["id"] == name)
+             gate["passed"] = meets_target(
+diff --git a/tests/apps/test_project_service_reuse.py b/tests/apps/test_project_service_reuse.py
+index 4122efd3..8f29964c 100644
+--- a/tests/apps/test_project_service_reuse.py
++++ b/tests/apps/test_project_service_reuse.py
+@@ -70,8 +70,16 @@ def events(campaign, attempt):
+ 
+ 
+ def test_one_service_order_and_independent_final_ignores_workspace(campaign):
++    config = settings()
++    config["quality"].update(direction="minimize", unit="%", threshold=1)
++    campaign["config"].write_text(json.dumps(config))
++    commit(campaign["repo"], quality=0.005, score_unit="fraction")
+     begin(campaign)
+-    result = submit(campaign, version="accepted", a=95, b=102)
++    failed = submit(campaign, version="wrong-quality", a=90, quality=0.02, score_unit="fraction")
++    assert failed["latest_observation"]["assessment"]["verdict"] == "FAIL"
++    assert failed["best"]["kind"] == "baseline"
++    result = submit(campaign, version="accepted", a=95, b=102, quality=0.005,
++                    score_unit="fraction")
+     attempt = result["latest_observation"]
+     assert attempt["assessment"]["verdict"] == "PASS"
+     log = events(campaign, attempt)
+@@ -357,17 +365,22 @@ def test_incomplete_baseline_prevents_candidate_search(campaign):
+ def test_baseline_comparison_quality_and_pause_resume(campaign):
+     config = settings()
+     config["quality"].pop("threshold")
+-    config["quality"].update(mode="baseline_comparison", tolerance=0)
++    config["quality"].update(mode="baseline_comparison", direction="minimize", unit="%",
++                             tolerance=0.5)
+     config["stagnation"] = {"rounds": 1, "action": "pause"}
+     campaign["config"].write_text(json.dumps(config))
++    commit(campaign["repo"], quality=0.5, score_unit="%")
+     begin(campaign)
+-    result = submit(campaign, version="worse-quality", a=90, quality=0)
++    result = submit(campaign, version="worse-quality", a=90, quality=0.02, score_unit="fraction")
+     assert result["state"] == "paused"
+     assert result["latest_observation"]["assessment"]["quality_passed"] is False
+     resumed = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     repeated = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     assert resumed["stagnation"] == repeated["stagnation"]
+     assert resumed["state"] == "active"
++    accepted = submit(campaign, version="improved", a=90, quality=0.005, score_unit="fraction")
++    assert accepted["latest_observation"]["assessment"]["verdict"] == "PASS"
++    assert accepted["latest_observation"]["execution"]["quality_score"] == 0.5
+ 
+ 
+ def test_accepted_but_unselected_candidate_keeps_its_verdict(campaign):
+@@ -659,6 +672,7 @@ def test_existing_quality_reference_is_reused_only_when_compatible(campaign, com
+         "run_id": "previous-run",
+         "dataset": "synthetic",
+         "scorer": "exact-v1" if compatible else "incompatible-scorer",
++        "unit": "points",
+         "samples": 2,
+         "quality": 1,
+     }
+@@ -687,7 +701,7 @@ def test_reference_refresh_uses_baseline_cache_without_testing_parent_quality(
+     reference = {
+         "status": "completed", "revision": revision, "conditions": config["conditions"],
+         "service_id": "previous-service", "run_id": "previous-run",
+-        "dataset": "synthetic", "scorer": "exact-v1", "samples": 2, "quality": 1,
++        "dataset": "synthetic", "scorer": "exact-v1", "unit": "points", "samples": 2, "quality": 1,
+     }
+     protocol = Path(campaign["start"][campaign["start"].index("--protocol") + 1])
+     (protocol / "reference.json").write_text(json.dumps(reference))
+@@ -1674,3 +1688,55 @@ def test_service_planning_brief_marks_quality_inputs_provisional(campaign):
+     assert prepared["task_brief"]["id"] != brief["id"]
+     assert "quality >= baseline quality - 0.1 points" in prepared["task_brief"]["quality_gate"]
+     assert not campaign["root"].exists()
++
++
