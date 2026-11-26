@@ -1,3 +1,7 @@
++    choice.add_argument("--value", help="Chosen option value or free-form text")
++    choice.add_argument("--unknown", action="store_true",
++                        help="Record as unknown; dependent stages stay blocked")
++    answer.add_argument("--frozen", type=Path)
 +    answer.add_argument("--json", action="store_true")
 +    summary = intake_actions.add_parser(
 +        "summary", help="Readable confirmation summary with sources and next steps")
@@ -9,10 +13,10 @@
          child = commands.add_parser(
 diff --git a/src/inferrsi/apps/cli/campaign_intake.py b/src/inferrsi/apps/cli/campaign_intake.py
 new file mode 100644
-index 000000000..097303597
+index 000000000..b187effc8
 --- /dev/null
 +++ b/src/inferrsi/apps/cli/campaign_intake.py
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,182 @@
 +"""Bind the user's final brief to the same frozen inputs used by campaign start."""
 +
 +import copy
@@ -62,7 +66,7 @@ index 000000000..097303597
 +                "acceptance.direction": primary["direction"],
 +                "protocol.quality_metric": quality["key"],
 +                "protocol.quality_benchmark": quality["dataset"],
-+                "protocol.quality_comparator": "at_most" if relative else comparison,
++                "protocol.quality_comparator": comparison,
 +                "protocol.quality_limit": quality["tolerance" if relative else "threshold"],
 +                "protocol.timing_boundary": settings["conditions"]["timing_scope"],
 +                "optimization.workload": settings["conditions"]["workload"],
@@ -101,7 +105,10 @@ index 000000000..097303597
 +def _conflicts(conditions, expected, args):
 +    conflicts = []
 +    for key, actual in expected.items():
-+        approved = conditions[key]
++        if key == "protocol.quality_limit" and "protocol.quality_baseline_tolerance" in conditions:
++            approved = conditions["protocol.quality_baseline_tolerance"]
++        else:
++            approved = conditions[key]
 +        if key == "optimization.repository":
 +            approved = str(Path(approved).expanduser().resolve())
 +        elif key.endswith("_command"):
@@ -134,10 +141,3 @@ index 000000000..097303597
 +    ):
 +        raise ValueError("Use a new campaign directory outside project/protocol")
 +    try:
-+        with file_lock(path.with_name(path.name + ".lock")):
-+            gate, record = task_intake.campaign_gate(path)
-+            if not gate["task_brief"] or (not args.prepare_intake and not gate["complete"]):
-+                return gate
-+            if not args.prepare_intake and "campaign_launch" not in record:
-+                return _blocked(
-+                    "unbound_brief", message="Use --prepare-intake and review the executable brief."

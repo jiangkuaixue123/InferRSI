@@ -27,10 +27,10 @@ index a98469097..24c7e3cfb 100644
  | JSON Schema (draft 2020-12) | `src/inferrsi/apps/cli/task-input/v1/schema.json` in the wheel | `inferrsi task schema` |
 diff --git a/docs/guides/task-intake.md b/docs/guides/task-intake.md
 new file mode 100644
-index 000000000..cbabc7e49
+index 000000000..f32516f79
 --- /dev/null
 +++ b/docs/guides/task-intake.md
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,223 @@
 +# Task intake records (intake/v1)
 +
 +`intake/v1` is the confirmation record an Agent fills before a measured task.

@@ -1,3 +1,10 @@
++        with file_lock(path.with_name(path.name + ".lock")):
++            gate, record = task_intake.campaign_gate(path)
++            if not gate["task_brief"] or (not args.prepare_intake and not gate["complete"]):
++                return gate
++            if not args.prepare_intake and "campaign_launch" not in record:
++                return _blocked(
++                    "unbound_brief", message="Use --prepare-intake and review the executable brief."
 +                )
 +            with tempfile.TemporaryDirectory(prefix="inferrsi-intake-") as tmp:
 +                staged_args = copy.copy(args)
@@ -51,10 +58,10 @@
 +    return {**result, "intake": receipt}
 diff --git a/src/inferrsi/apps/cli/intake_contract.py b/src/inferrsi/apps/cli/intake_contract.py
 new file mode 100644
-index 000000000..e7e667063
+index 000000000..6aeec7bbd
 --- /dev/null
 +++ b/src/inferrsi/apps/cli/intake_contract.py
-@@ -0,0 +1,781 @@
+@@ -0,0 +1,815 @@
 +"""intake/v1: host-independent task intake records for missing-field confirmation.
 +
 +A card, a numbered text fallback and an optional check-in interview all write the
@@ -138,15 +145,3 @@ index 000000000..e7e667063
 +        bad("schema_version", f"must be {SCHEMA_VERSION}")
 +    if not isinstance(spec.get("task"), str) or not spec["task"].strip():
 +        bad("task", "must be a non-empty string")
-+    fields = spec.get("fields")
-+    if not isinstance(fields, list) or not fields:
-+        bad("fields", "must be a non-empty array")
-+        return problems
-+    seen: set[str] = set()
-+    for index, field in enumerate(fields):
-+        where = f"fields[{index}]"
-+        if not isinstance(field, dict):
-+            bad(where, "must be an object")
-+            continue
-+        path = field.get("path")
-+        if not isinstance(path, str) or not path.strip():

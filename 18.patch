@@ -1,3 +1,61 @@
++      "SKILL.md": "46b44df9d2b6b91ae305df21536d9cf04903b3ea442b0413b3f2319452faafb9",
++      "intake.json": "13ecae20885d7ea07bbb00b84be3481f4a825590e2e4044abd6cdb2d6bcaf680"
+     }
+   },
+   "task-version-alignment": {
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md b/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
+index d7ff9c811..cc1db9035 100644
+--- a/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
+@@ -43,6 +43,8 @@ metadata:
+ 
+ Choose one primary skill by the requested deliverable. Load its full procedure
+ before the first supporting evidence search. Record secondary tasks for follow-up.
++When two primary skills remain plausible after reading the request, ask the user
++which deliverable they want before loading either; do not guess a route.
+ The route cards remain available to callers that consume the JSON summaries.
+ 
+ | Primary skill | Choose it when | Route card |
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json
+new file mode 100644
+index 000000000..d01200c5b
+--- /dev/null
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json
+@@ -0,0 +1,63 @@
++{
++  "schema_version": 1,
++  "task": "task-day-0",
++  "description": "Confirmation fields for day-zero support of a new checkpoint or architecture. These fields have no task-input/v1 home; they stay in the intake record and the task summary until a later task-file version defines them.",
++  "fields": [
++    {
++      "path": "day0.checkpoint",
++      "maps_to": "day0-spec",
++      "batch": 1,
++      "type": "text",
++      "question": "Which checkpoint or weights must the target engine load?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.tokenizer_or_processor",
++      "maps_to": "day0-spec",
++      "batch": 1,
++      "type": "text",
++      "question": "Which tokenizer or processor accompanies the checkpoint?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.target_engine_and_device",
++      "maps_to": "day0-spec",
++      "batch": 1,
++      "type": "text",
++      "question": "Which engine revision and target device must run the model?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.first_scope",
++      "maps_to": "day0-spec",
++      "batch": 1,
++      "type": "text",
 +      "question": "Which modalities or features must the first supported scope cover?",
 +      "required_before": ["device_execution"]
 +    },
@@ -72,59 +130,3 @@ index 76b25ae7c..9216d73ba 100644
 +`task_brief.campaign_launch` settings in the read-back. Preparation starts no
 +measurements. A planning-only brief can be reviewed without a launch.
 +
-+When intake returns `brief_review: awaiting_confirmation`, read back the complete
-+`task_brief` in the user's language, including the target and accuracy
-+inequalities, benchmark, pinned setup, commands, scope, comparison and budget.
-+Then call the native question-card tool for a **separate** approve-or-revise
-+decision on that brief. Wait for a new explicit reply. Use `task intake answer`
-+with this revision's `q:task_brief:...` ID. Record requested changes, update the
-+fields and read back the new brief for fresh approval. Until approval, only
-+read-only preparation is allowed, even if the user answered every field or
-+selected an existing acceptance plan. Hand the approved record to `campaign
-+start --intake`; apply the approved conditions to the validator and final replay.
- 
- ## Run the procedure
- 
-diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json
-new file mode 100644
-index 000000000..8a419ac33
---- /dev/null
-+++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json
-@@ -0,0 +1,309 @@
-+{
-+  "schema_version": 1,
-+  "task": "task-performance",
-+  "description": "Confirmation fields for a performance-optimization round. Questions are asked only for fields that block the next stage; acceptance values stated outside an acceptance issue or frozen task file stay proposals.",
-+  "fields": [
-+    {
-+      "path": "optimization.objective",
-+      "user_choice": true,
-+      "maps_to": "task-input/v1",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which outcome decides this round?",
-+      "required_before": ["baseline_measurement", "candidate_search"]
-+    },
-+    {
-+      "path": "acceptance.metric_key",
-+      "maps_to": "task-input/v1",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which metric decides this round?",
-+      "options": [
-+        {"value": "p95_ttft", "hint": "client-observed p95 time to first token"},
-+        {"value": "throughput", "hint": "requests completed per second under the fixed load"},
-+        {"value": "p95_tpot", "hint": "p95 time per output token"},
-+        {"value": "peak_memory", "hint": "peak device memory under the fixed load"}
-+      ],
-+      "required_before": ["baseline_measurement", "candidate_search"]
-+    },
-+    {
-+      "path": "acceptance.metric_unit",
-+      "maps_to": "task-input/v1",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which unit does the metric use?",
-+      "required_before": ["candidate_search"]
-+    },
-+    {

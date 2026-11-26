@@ -1,3 +1,62 @@
++    else:
++        source = f"answer:{question_id}"
++        updated["fields"][field["path"]] = {
++            "value": _coerce(field, value), "source": source,
++            "status": _status_for(field, source), "asked": True,
++        }
++        _bump(updated, updated["revision"] + 1)
++    updated["open_questions"] = [
++        item for item in updated["open_questions"] if item.get("id") != question_id]
++    return updated
++
++
++def summary(record: dict, spec: dict, *, frozen: dict | None = None) -> dict:
++    """A readable confirmation summary: sources, proposals, unknowns and next steps."""
++    view = evaluate(record, spec, frozen=frozen)
++    confirmed, proposed, unknown = {}, {}, []
++    for field in spec["fields"]:
++        path = field["path"]
++        entry = view["fields"].get(path, {})
++        status = entry.get("status", "unknown")
++        if status == "confirmed":
++            confirmed[path] = entry.get("value")
++        elif status in ("proposed", "assumed"):
++            proposed[path] = entry.get("value")
++        elif status in ("unknown", "conflicting", "stale", "superseded"):
++            unknown.append(path)
++    conditions = (view["task_brief"] or {}).get("conditions", {})
++    if "protocol.quality_baseline_tolerance" in conditions:
++        for values in (confirmed, proposed):
++            if "protocol.quality_limit" in values:
++                values["protocol.quality_baseline_tolerance"] = values.pop("protocol.quality_limit")
++    return {
++        "schema_version": SCHEMA_VERSION,
++        "task": spec["task"],
++        "record_id": record["record_id"],
++        "revision": view["revision"],
++        "primary_task": record["primary_task"],
++        "phase": record["phase"],
++        "task_brief": view["task_brief"],
++        "brief_review": view["brief_review"],
++        "confirmed": confirmed,
++        "proposed": proposed,
++        "unknown": unknown,
++        "conflicts": view["conflicts"],
++        "blockers": view["blockers"],
++        "allowed_next": view["allowed_next"],
++        "complete": view["complete"],
++        "execution": "not started",
++    }
+diff --git a/src/inferrsi/apps/cli/task_input.py b/src/inferrsi/apps/cli/task_input.py
+index 7f5b3f8c0..613056ba4 100644
+--- a/src/inferrsi/apps/cli/task_input.py
++++ b/src/inferrsi/apps/cli/task_input.py
+@@ -208,7 +208,7 @@ def _http_url(value: str) -> str | None:
+     return None
+ 
+ 
+-def _check(field: Field, value: object) -> str | None:
++def field_value_problem(field: Field, value: object) -> str | None:
      """Return why ``value`` (never None) is invalid for ``field``, or None."""
      if not _encodable(value):
          return "must be valid Unicode text"
@@ -30,10 +89,10 @@
              elif field.acceptance:
 diff --git a/src/inferrsi/apps/cli/task_intake.py b/src/inferrsi/apps/cli/task_intake.py
 new file mode 100644
-index 000000000..7643874a4
+index 000000000..88988dcf3
 --- /dev/null
 +++ b/src/inferrsi/apps/cli/task_intake.py
-@@ -0,0 +1,367 @@
+@@ -0,0 +1,368 @@
 +"""intake/v1 CLI: evaluate, answer and summarize confirmation records.
 +
 +The contract lives in ``inferrsi.apps.cli.intake_contract``. This module loads the
@@ -97,62 +156,3 @@ index 000000000..7643874a4
 +def write_record(path: Path, record: dict) -> str:
 +    """Write the record atomically; return the sha256 of the written bytes."""
 +    path = Path(path)
-+    path.parent.mkdir(parents=True, exist_ok=True)
-+    text = _payload(record)
-+    descriptor, temp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
-+    try:
-+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-+            stream.write(text)
-+        os.replace(temp, path)
-+    except BaseException:
-+        Path(temp).unlink(missing_ok=True)
-+        raise
-+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-+
-+
-+def frozen_values(path: Path) -> dict:
-+    """Acceptance values stated by a frozen gate task file, keyed by spec path."""
-+    from . import task_input
-+
-+    preview = task_input.preview(path)
-+    if not preview["valid"]:
-+        first = preview["errors"][0]
-+        raise intake.IntakeError(
-+            "invalid_frozen", f"frozen gate record: {first['field']} {first['message']}")
-+    acceptance = preview["task"]["acceptance"]
-+    # ``reference`` names the gate record itself and is path-normalized by the task
-+    # contract, so it is not compared; ``task_input.frozen_gate`` makes the same choice.
-+    return {f"acceptance.{name}": value for name, value in acceptance.items()
-+            if name != "reference" and preview["sources"][f"acceptance.{name}"] == "yaml"}
-+
-+
-+def parse_sets(items: list[str]) -> dict:
-+    values = {}
-+    for item in items:
-+        path, separator, value = item.partition("=")
-+        if not separator or not path.strip():
-+            raise intake.IntakeError("invalid_set", f"--set expects PATH=VALUE, got {item!r}")
-+        values[path.strip()] = value
-+    return values
-+
-+
-+def _persist(path: Path, record: dict, view: dict) -> None:
-+    for path_key, field in record["fields"].items():
-+        field["status"] = view["fields"][path_key]["status"]
-+    record["open_questions"] = view["questions"]
-+    record["blockers"] = view["blockers"]
-+    record["conflicts"] = view["conflicts"]
-+    record["allowed_next"] = view["allowed_next"]
-+    record["complete"] = view["complete"]
-+    write_record(path, record)
-+
-+
-+def _evaluate_gate(record: dict, spec: dict, frozen_path: Path | None,
-+                   *, selecting_reference: bool) -> tuple[dict, dict | None]:
-+    snapshot = record.get("selected_gate")
-+    selected_path = None
-+    if snapshot:
-+        selected_path = Path(record.get("selected_gate_file", snapshot["reference"]))
-+    if frozen_path is None:
-+        frozen_path = selected_path
-+    frozen = frozen_values(frozen_path) if frozen_path else None

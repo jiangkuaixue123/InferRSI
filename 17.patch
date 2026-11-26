@@ -1,3 +1,50 @@
+@@ -137,7 +162,7 @@ def inspect_step(directory: Path, settings: dict, definition: dict, execution: d
+ 
+ 
+ def assess(directory: Path, settings: dict, execution: dict, *,
+-           mechanism: dict | None = None) -> dict:
++           mechanism: dict | None = None, final_target: dict | None = None) -> dict:
+     """Judge one attempt; ``mechanism`` is the declaration bound before execution."""
+     evidence = {}
+ 
+@@ -229,6 +254,13 @@ def result(status, reason, **fields):
+             verdict, reason = "FAIL", "explanation_" + explanation["status"]
+         elif explanation["status"] != "explained":
+             verdict, reason = "INCONCLUSIVE", "explanation_" + explanation["status"]
++    if final_target and verdict == "PASS":
++        passed = meets_target(final_target, baseline=before, candidate=after,
++                              direction=settings["direction"])
++        if passed is None:
++            verdict, reason = "INCONCLUSIVE", "final_target_evidence_unavailable"
++        elif not passed:
++            verdict, reason = "FAIL", "final_performance_target_not_met"
+     accepted = verdict == "PASS"
+     point = {"improvement_pct": improvement, "speedup": speedup}
+     score, baseline_score, basis = after, before, "candidate_median"
+@@ -259,6 +291,7 @@ def result(status, reason, **fields):
+         paired_statistics=paired, decision=decision,
+         require_explanation=settings.get("require_explanation", False),
+         profile_evidence=observed, explanation=explanation,
+-        quality_contract="Only the supplied frozen quality script and its boolean result",
++        quality_contract=settings.get(
++            "quality_bound", "Only the supplied frozen quality script and its boolean result"),
+         environment_qualification="Caller-managed; no automatic hardware isolation claim",
+     )
+diff --git a/src/inferrsi/harness/project_service.py b/src/inferrsi/harness/project_service.py
+index c1bcde2d3..1b7a7b564 100644
+--- a/src/inferrsi/harness/project_service.py
++++ b/src/inferrsi/harness/project_service.py
+@@ -858,12 +858,31 @@ def evaluate(role):
+             if parent is not None
+             else {"passed": True, "metrics": {}}
+         )
++        target = None
++        if role == "candidate" and "candidate_min_improvement_pct" in plan:
++            target = {"target_kind": "relative_improvement_pct",
++                      "target_value": plan["candidate_min_improvement_pct"]}
++        elif role == "final":
++            target = plan.get("performance_target")
++        if target and gate["passed"]:
 +            from .project import meets_target
 +
 +            name = settings["ranking"][0]
@@ -61,61 +108,3 @@ index 93037ddac..4fc6071a2 100644
      },
      "files": {
 -      "SKILL.md": "bf5a137504566b6ee4eeaee18400d52aae99a1db3c8247dea7247d653103df0b"
-+      "SKILL.md": "46b44df9d2b6b91ae305df21536d9cf04903b3ea442b0413b3f2319452faafb9",
-+      "intake.json": "13ecae20885d7ea07bbb00b84be3481f4a825590e2e4044abd6cdb2d6bcaf680"
-     }
-   },
-   "task-version-alignment": {
-diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md b/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
-index d7ff9c811..cc1db9035 100644
---- a/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
-+++ b/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
-@@ -43,6 +43,8 @@ metadata:
- 
- Choose one primary skill by the requested deliverable. Load its full procedure
- before the first supporting evidence search. Record secondary tasks for follow-up.
-+When two primary skills remain plausible after reading the request, ask the user
-+which deliverable they want before loading either; do not guess a route.
- The route cards remain available to callers that consume the JSON summaries.
- 
- | Primary skill | Choose it when | Route card |
-diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json
-new file mode 100644
-index 000000000..d01200c5b
---- /dev/null
-+++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json
-@@ -0,0 +1,63 @@
-+{
-+  "schema_version": 1,
-+  "task": "task-day-0",
-+  "description": "Confirmation fields for day-zero support of a new checkpoint or architecture. These fields have no task-input/v1 home; they stay in the intake record and the task summary until a later task-file version defines them.",
-+  "fields": [
-+    {
-+      "path": "day0.checkpoint",
-+      "maps_to": "day0-spec",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which checkpoint or weights must the target engine load?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.tokenizer_or_processor",
-+      "maps_to": "day0-spec",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which tokenizer or processor accompanies the checkpoint?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.target_engine_and_device",
-+      "maps_to": "day0-spec",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which engine revision and target device must run the model?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.first_scope",
-+      "maps_to": "day0-spec",
-+      "batch": 1,
-+      "type": "text",

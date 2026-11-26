@@ -1,3 +1,9 @@
++specified initial prompt. Until approval, allow only read-only preparation.
++Pass the approved record to `campaign start --intake <record.json>` and use its
++criteria in the frozen protocol and final evaluation.
++
+ ## Optimize an ordinary user project
+ 
  Default to the current Agent conversation. Read `campaign start --help` through
 diff --git a/src/inferrsi/apps/cli/__init__.py b/src/inferrsi/apps/cli/__init__.py
 index c76418009..bea5d8991 100644
@@ -108,7 +114,3 @@ index c6c241b2f..c77edf282 100644
 +    answer.add_argument("--record", type=Path, required=True)
 +    answer.add_argument("--question", required=True, help="Question id from evaluate")
 +    choice = answer.add_mutually_exclusive_group(required=True)
-+    choice.add_argument("--value", help="Chosen option value or free-form text")
-+    choice.add_argument("--unknown", action="store_true",
-+                        help="Record as unknown; dependent stages stay blocked")
-+    answer.add_argument("--frozen", type=Path)

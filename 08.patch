@@ -1,3 +1,15 @@
++    fields = spec.get("fields")
++    if not isinstance(fields, list) or not fields:
++        bad("fields", "must be a non-empty array")
++        return problems
++    seen: set[str] = set()
++    for index, field in enumerate(fields):
++        where = f"fields[{index}]"
++        if not isinstance(field, dict):
++            bad(where, "must be an object")
++            continue
++        path = field.get("path")
++        if not isinstance(path, str) or not path.strip():
 +            bad(f"{where}.path", "must be a non-empty string")
 +        elif path in seen:
 +            bad(f"{where}.path", f"duplicates {path}")
@@ -128,16 +140,3 @@
 +    return problems
 +
 +
-+def _check(record: dict, spec: dict) -> None:
-+    problems = validate_record(record, spec)
-+    if problems:
-+        first = problems[0]
-+        raise IntakeError("invalid_record", f"{first['field']}: {first['message']}")
-+
-+
-+def _entry(record: dict, path: str) -> dict:
-+    return record["fields"].get(path) or {"value": None, "source": "unknown",
-+                                          "status": "unknown", "asked": False}
-+
-+
-+def _settled(record: dict, path: str) -> bool:

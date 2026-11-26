@@ -1,3 +1,52 @@
++    lines.append("allowed next: " + ", ".join(view["allowed_next"]))
++    return "\n".join(lines)
++
++
++def command(args) -> int:
++    try:
++        if args.intake_action == "summary":
++            result = summary_command(args)
++        else:
++            path = args.record
++            path.parent.mkdir(parents=True, exist_ok=True)
++            with file_lock(path.with_name(path.name + ".lock")):
++                if args.intake_action == "evaluate":
++                    result = evaluate_command(args)
++                else:
++                    result = answer_command(args)
++    except BlockingIOError:
++        print(json.dumps({"error": "record_busy", "message": "Retry after the current update",
++                          "execution": "not started"}))
++        return 2
++    except intake.IntakeError as exc:
++        print(json.dumps({"error": exc.code, "message": str(exc), "execution": "not started"},
++                         ensure_ascii=False, indent=2))
++        return 2
++    if getattr(args, "json", False):
++        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
++    else:
++        print(render_summary(result) if args.intake_action == "summary" else render(result))
++    return 0
+diff --git a/src/inferrsi/harness/optimization_session.py b/src/inferrsi/harness/optimization_session.py
+index 8a522793a..3ef1e569f 100644
+--- a/src/inferrsi/harness/optimization_session.py
++++ b/src/inferrsi/harness/optimization_session.py
+@@ -58,7 +58,9 @@ def _session_assess(root, directory, plan, execution, mechanism=None):
+     if plan["task_source"] == "project":
+         from inferrsi.harness.project import assess
+ 
+-        return assess(directory, plan["evaluation_settings"], execution, mechanism=mechanism)
++        target = plan.get("performance_target") if directory.parent == root / "final" else None
++        return assess(directory, plan["evaluation_settings"], execution, mechanism=mechanism,
++                      final_target=target)
+     return run_protocol(root / "frozen", plan["frozen_files"]["optimization.py"], "assess",
+                         launch_directory=directory, directory=directory,
+                         settings=plan["evaluation_settings"],
+@@ -133,7 +135,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
+                     knowledge_reader=None,
+                     retain_context=None, external_knowledge=None, external_provider=None,
+                     external_project=None, external_provider_for=None,
+-                    report_metadata=None) -> dict:
 +                    report_metadata=None, initialize=None) -> dict:
      """Run one operation; discovery and knowledge access are supplied by the caller."""
      from inferrsi.harness import optimization
@@ -72,50 +121,3 @@ index da27f389f..f1622844d 100644
      if rejected or (definition["phase"] == "quality" and quality is False):
          return {"status": ("candidate_failure" if definition["side"] == "candidate"
                             else "infrastructure_failure"),
-@@ -137,7 +162,7 @@ def inspect_step(directory: Path, settings: dict, definition: dict, execution: d
- 
- 
- def assess(directory: Path, settings: dict, execution: dict, *,
--           mechanism: dict | None = None) -> dict:
-+           mechanism: dict | None = None, final_target: dict | None = None) -> dict:
-     """Judge one attempt; ``mechanism`` is the declaration bound before execution."""
-     evidence = {}
- 
-@@ -229,6 +254,13 @@ def result(status, reason, **fields):
-             verdict, reason = "FAIL", "explanation_" + explanation["status"]
-         elif explanation["status"] != "explained":
-             verdict, reason = "INCONCLUSIVE", "explanation_" + explanation["status"]
-+    if final_target and verdict == "PASS":
-+        passed = meets_target(final_target, baseline=before, candidate=after,
-+                              direction=settings["direction"])
-+        if passed is None:
-+            verdict, reason = "INCONCLUSIVE", "final_target_evidence_unavailable"
-+        elif not passed:
-+            verdict, reason = "FAIL", "final_performance_target_not_met"
-     accepted = verdict == "PASS"
-     point = {"improvement_pct": improvement, "speedup": speedup}
-     score, baseline_score, basis = after, before, "candidate_median"
-@@ -259,6 +291,7 @@ def result(status, reason, **fields):
-         paired_statistics=paired, decision=decision,
-         require_explanation=settings.get("require_explanation", False),
-         profile_evidence=observed, explanation=explanation,
--        quality_contract="Only the supplied frozen quality script and its boolean result",
-+        quality_contract=settings.get(
-+            "quality_bound", "Only the supplied frozen quality script and its boolean result"),
-         environment_qualification="Caller-managed; no automatic hardware isolation claim",
-     )
-diff --git a/src/inferrsi/harness/project_service.py b/src/inferrsi/harness/project_service.py
-index c1bcde2d3..1b7a7b564 100644
---- a/src/inferrsi/harness/project_service.py
-+++ b/src/inferrsi/harness/project_service.py
-@@ -858,12 +858,31 @@ def evaluate(role):
-             if parent is not None
-             else {"passed": True, "metrics": {}}
-         )
-+        target = None
-+        if role == "candidate" and "candidate_min_improvement_pct" in plan:
-+            target = {"target_kind": "relative_improvement_pct",
-+                      "target_value": plan["candidate_min_improvement_pct"]}
-+        elif role == "final":
-+            target = plan.get("performance_target")
-+        if target and gate["passed"]:

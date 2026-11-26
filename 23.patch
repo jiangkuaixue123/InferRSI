@@ -1,3 +1,109 @@
++from tests.apps.test_project_optimization import project, start_arguments  # noqa: F401
++from tests.fixtures.campaign_intake import approved_start
++
++FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "intake"
++PERFORMANCE = FIXTURES / "performance"
++COMPLETE = json.loads((PERFORMANCE / "complete.json").read_text(encoding="utf-8"))
++PARTIAL = json.loads((PERFORMANCE / "partial.json").read_text(encoding="utf-8"))
++ALL_VALUES = {**COMPLETE["fields"]["values"], **COMPLETE["acceptance"]["values"]}
++
++
++def spec_for(task: str = "task-performance") -> dict:
++    return task_intake.load_spec(task)
++
++
++def build(paths: set[str] | None = None, *, task: str = "task-performance") -> dict:
++    """A record built from the complete fixture, optionally restricted to ``paths``."""
++    spec = spec_for(task)
++    record = intake.new_record(task, record_id="intake-test")
++    if task == "task-performance":
++        chosen = {path: value for path, value in ALL_VALUES.items()
++                  if paths is None or path in paths}
++        stated = {path: value for path, value in chosen.items()
++                  if path in COMPLETE["fields"]["values"]}
++        accepted = {path: value for path, value in chosen.items()
++                    if path in COMPLETE["acceptance"]["values"]}
++        if stated:
++            record = intake.set_fields(record, spec, stated, source="prompt")
++        if accepted:
++            accepted[intake.REFERENCE] = ALL_VALUES[intake.REFERENCE]
++            record = intake.set_fields(record, spec, accepted, source="issue")
++    return record
++
++
++def ask(record: dict, spec: dict, frozen: dict | None = None) -> tuple[dict, dict]:
++    """Evaluate and persist the open questions, as the CLI does."""
++    view = intake.evaluate(record, spec, frozen=frozen)
++    record = json.loads(json.dumps(record))
++    record["open_questions"] = view["questions"]
++    return record, view
++
++
++def batch_paths(spec: dict, batch: int) -> set[str]:
++    return {field["path"] for field in spec["fields"] if field.get("batch", 1) == batch}
++
++
++def test_packaged_specs_validate_and_declare_their_targets():
++    for task in ("task-performance", "task-day-0"):
++        spec = spec_for(task)
++        assert spec["task"] == task
++        assert intake.validate_spec(spec) == []
++        assert all(field["maps_to"] in intake.MAP_TARGETS for field in spec["fields"])
++
++
++def test_day0_fields_stay_out_of_task_input_v1():
++    spec = spec_for("task-day-0")
++    assert all(field["maps_to"] == "day0-spec" for field in spec["fields"])
++
++
++def approved_record():
++    record, view = ask(build(), spec_for())
++    return intake.answer(record, spec_for(), question_id=view["task_brief"]["id"], value="approve")
++
++
++def test_complete_fields_require_separate_review_before_search():
++    spec = spec_for()
++    record, view = ask(build(), spec)
++    assert view["brief_review"] == "awaiting_confirmation"
++    brief = view["task_brief"]
++    assert brief["performance_target"] == "p95_ttft <= 180 ms"
++    assert brief["quality_gate"] == "token mismatches <= 0 tokens"
++    assert brief["benchmark"] == ALL_VALUES["protocol.quality_benchmark"]
++    assert brief["conditions"] == ALL_VALUES
++    assert [q["id"] for q in view["questions"]] == [brief["id"]]
++    assert not view["complete"] and view["needs_user_input"]
++    assert view["allowed_next"] == ["read_only_preparation"]
++    approved = intake.evaluate(approved_record(), spec)
++    assert approved["complete"] and not approved["questions"]
++    assert approved["brief_review"] == "approved"
++    assert approved["allowed_next"] == ["read_only_preparation", "baseline_measurement",
++                                       "candidate_search"]
++    assert approved["execution"] == "not started"
++
++
++def test_empty_record_asks_only_the_first_batch():
++    spec = spec_for()
++    view = intake.evaluate(intake.new_record("task-performance", record_id="intake-empty"), spec)
++    asked = {question["field"] for question in view["questions"]}
++    expected = batch_paths(spec, 1) - {"acceptance.min_improvement_pct"}
++    assert asked == expected
++    assert all(question["batch"] == 1 for question in view["questions"])
++    assert view["complete"] is False
++
++
++def test_second_batch_appears_once_the_first_is_settled():
++    spec = spec_for()
++    record = build(batch_paths(spec, 1))
++    view = intake.evaluate(record, spec)
++    asked = {question["field"] for question in view["questions"]}
++    assert asked == batch_paths(spec, 2)
++    assert all(question["batch"] == 2 for question in view["questions"])
++
++
++def test_unknown_answer_blocks_its_stage_and_is_not_asked_again():
++    spec = spec_for()
++    record, view = ask(intake.new_record("task-performance", record_id="intake-unknown"), spec)
++    question = next(item for item in view["questions"]
 +                    if item["field"] == "protocol.timing_boundary")
 +    record = intake.answer(record, spec, question_id=question["id"], unknown=True)
 +    view = intake.evaluate(record, spec)
@@ -29,91 +135,3 @@
 +def test_duplicate_answer_is_rejected_once():
 +    spec = spec_for()
 +    record, view = ask(intake.new_record("task-performance", record_id="intake-dup"), spec)
-+    question = next(item for item in view["questions"]
-+                    if item["field"] == "acceptance.metric_key")
-+    record = intake.answer(record, spec, question_id=question["id"], value="p95_ttft")
-+    with pytest.raises(intake.IntakeError) as error:
-+        intake.answer(record, spec, question_id=question["id"], value="p95_ttft")
-+    assert error.value.code == "already_answered"
-+
-+
-+def test_acceptance_answer_from_a_card_stays_a_proposal():
-+    spec = spec_for()
-+    record, view = ask(intake.new_record("task-performance", record_id="intake-card"), spec)
-+    question = next(item for item in view["questions"]
-+                    if item["field"] == "acceptance.metric_key")
-+    record = intake.answer(record, spec, question_id=question["id"], value="p95_ttft")
-+    assert record["fields"]["acceptance.metric_key"]["status"] == "proposed"
-+    view = intake.evaluate(record, spec)
-+    search = next(item for item in view["blockers"] if item["stage"] == "candidate_search")
-+    assert "acceptance.metric_key" in {item["field"] for item in search["blocked_by"]}
-+    assert "candidate_search" not in view["allowed_next"]
-+    summary = intake.summary(record, spec)
-+    assert summary["proposed"]["acceptance.metric_key"] == "p95_ttft"
-+
-+
-+def test_acceptance_issue_confirms_a_previously_proposed_value():
-+    spec = spec_for()
-+    record = intake.new_record("task-performance", record_id="intake-upgrade")
-+    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p95_ttft"},
-+                               source="prompt")
-+    assert record["fields"]["acceptance.metric_key"]["status"] == "proposed"
-+    record = intake.set_fields(record, spec, {intake.REFERENCE: "accepted issue"}, source="prompt")
-+    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p95_ttft",
-+                                            intake.REFERENCE: "accepted issue"}, source="issue")
-+    assert record["fields"]["acceptance.metric_key"]["status"] == "confirmed"
-+
-+
-+def test_two_stated_values_become_a_question_with_both_options():
-+    spec = spec_for()
-+    record = intake.new_record("task-performance", record_id="intake-conflict")
-+    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p95_ttft"},
-+                               source="prompt")
-+    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p99_ttft"},
-+                               source="prompt")
-+    assert record["fields"]["acceptance.metric_key"]["status"] == "conflicting"
-+    record, view = ask(record, spec)
-+    question = view["questions"][0]
-+    assert question["field"] == "acceptance.metric_key"
-+    values = {option["value"] for option in question["options"]}
-+    assert values == {"p95_ttft", "p99_ttft"}
-+
-+
-+@pytest.mark.parametrize("selected", ["p95_ttft", "p99_ttft"])
-+def test_metric_conflict_card_then_matching_issue_confirmation(tmp_path, capsys, selected):
-+    path = tmp_path / "intake.json"
-+    record = ["--record", str(path), "--json"]
-+    metric = "acceptance.metric_key"
-+    reference = "selected acceptance issue"
-+
-+    def call(*args):
-+        assert cli.main(["task", "intake", *args, *record]) == 0
-+        return json.loads(capsys.readouterr().out)
-+
-+    call("evaluate", "--task", "task-performance", "--set", f"{intake.REFERENCE}={reference}",
-+         "--set", f"{metric}=p95_ttft")
-+    view = call("evaluate", "--set", f"{metric}=p99_ttft")
-+    card = view["questions"][0]
-+    assert card["field"] == metric
-+    assert {opt["value"] for opt in card["options"]} == {"p95_ttft", "p99_ttft"}
-+    assert call("evaluate", "--set", f"{metric}={selected}")["revision"] == view["revision"]
-+    chosen = call("answer", "--question", card["id"], "--value", selected)
-+    assert chosen["fields"][metric] == {"value": selected, "source": f"answer:q:{metric}",
-+                                        "status": "proposed"}
-+    assert not any(q["field"] == metric for q in chosen["questions"])
-+    issue = call("evaluate", "--source", "issue", "--set", f"{metric}={selected}",
-+                 "--set", f"{intake.REFERENCE}={reference}")
-+    assert issue["fields"][metric] == {"value": selected, "source": "issue", "status": "confirmed"}
-+    assert not issue["complete"]
-+
-+
-+def test_mismatching_issue_reopens_an_explicit_card_choice():
-+    spec = spec_for()
-+    record = build({intake.REFERENCE})
-+    record, _ = ask(record, spec)
-+    key = "acceptance.metric_key"
-+    record = intake.answer(record, spec, question_id=f"q:{key}", value="p95_ttft")
-+    record = intake.set_fields(record, spec, {key: "p99_ttft", intake.REFERENCE:
-+                               ALL_VALUES[intake.REFERENCE]}, source="issue")
-+    view = intake.evaluate(record, spec)
-+    assert view["fields"][key]["status"] == "conflicting"

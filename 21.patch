@@ -1,3 +1,50 @@
+-        distribution, tmp_path, "campaign", "start", "--directory", str(root),
++        distribution, tmp_path, *approved_start(["campaign", "start", "--directory", str(root),
+         "--repo", str(repo), "--include", "engine.py", "--include", "config.json",
+         "--protocol", str(protocol), "--instructions", str(instructions),
+         "--measure-command", '"{python}" "{protocol}/measure.py" "{candidate}" "{result}"',
+@@ -76,6 +77,7 @@ def test_isolated_plugin_runs_project_round_and_retained_final(distribution, tmp
+         "--quality-key", "correct", "--scope", "synthetic-software-control",
+         "--min-improvement-pct", "1", "--warmups", "0", "--repetitions", "1",
+         "--rounds", "1", "--max-minutes", "5", "--evaluation-timeout-seconds", "30",
++        "--python", "python3"]),
+     )
+     assert started.returncode == 0, started.stderr
+     diagnosed = invoke(distribution, tmp_path, *diagnosis_args(root, "campaign"))
+diff --git a/tests/apps/test_project_explanation.py b/tests/apps/test_project_explanation.py
+index d3a46329c..a556aaea1 100644
+--- a/tests/apps/test_project_explanation.py
++++ b/tests/apps/test_project_explanation.py
+@@ -11,6 +11,7 @@
+ from inferrsi.apps.views.optimization_chart import render_result
+ from inferrsi.harness.artifact_primitives import digest
+ from inferrsi.harness.optimization import read_records
++from tests.fixtures.campaign_intake import approved_start
+ from tests.fixtures.diagnosis import diagnosis_args
+ 
+ # Device-wide factor applied to every timed value of one measurement call, cycling per
+@@ -56,7 +57,7 @@ def project(tmp_path):
+ 
+ def start(project, capsys, *extra, repetitions=8):
+     repo, protocol, instructions, root = project
+-    code = main([
++    code = main(approved_start([
+         "campaign", "start", "--directory", str(root), "--repo", str(repo),
+         "--include", "engine.py", "--include", "config.json", "--protocol", str(protocol),
+         "--instructions", str(instructions), "--measure-command",
+@@ -67,7 +68,7 @@ def start(project, capsys, *extra, repetitions=8):
+         "--repetitions", str(repetitions), "--warmups", "1", "--min-improvement-pct", "1",
+         "--rounds", "4", "--round-mode", "up_to", "--max-minutes", "5",
+         "--evaluation-timeout-seconds", "20", *extra,
+-    ])
++    ]))
+     if code == 0:  # Rounds require a retained bottleneck diagnosis (#519).
+         assert main(diagnosis_args(root, "campaign")) == 0
+     capsys.readouterr()
+diff --git a/tests/apps/test_project_optimization.py b/tests/apps/test_project_optimization.py
+index f4f2887d9..27defac60 100644
+--- a/tests/apps/test_project_optimization.py
++++ b/tests/apps/test_project_optimization.py
 @@ -12,6 +12,7 @@
  from inferrsi.apps.views.dashboard import dashboard_snapshot, render_dashboard
  from inferrsi.harness import optimization_session
@@ -35,7 +82,7 @@
  
  
 diff --git a/tests/apps/test_project_service_reuse.py b/tests/apps/test_project_service_reuse.py
-index 1c99f94fe..83e65ae16 100644
+index 1c99f94fe..67963ff0e 100644
 --- a/tests/apps/test_project_service_reuse.py
 +++ b/tests/apps/test_project_service_reuse.py
 @@ -14,6 +14,7 @@
@@ -55,7 +102,7 @@ index 1c99f94fe..83e65ae16 100644
      campaign["capsys"].readouterr()
      assert not (campaign["root"] / "plan.json").exists()
  
-@@ -1518,3 +1519,90 @@ def test_mechanism_declaration_is_refused_in_service_mode(campaign, tmp_path):
+@@ -1518,3 +1519,131 @@ def test_mechanism_declaration_is_refused_in_service_mode(campaign, tmp_path):
      campaign["capsys"].readouterr()
      state = json.loads((campaign["root"] / "state.json").read_text())
      assert state["pending"] is None and not state.get("attempts", [])[1:]
@@ -69,59 +116,3 @@ index 1c99f94fe..83e65ae16 100644
 +    changed = settings()
 +    changed["quality"]["threshold"] = 0
 +    campaign["config"].write_text(json.dumps(changed))
-+    assert main(args) == 2
-+    blocked = json.loads(campaign["capsys"].readouterr().out)
-+    assert blocked["reason"] == "launch_conflict"
-+    assert blocked["conflicts"][0]["field"] == "protocol.quality_limit"
-+    changed = settings()
-+    changed["sampling"]["final"]["warmups"] += 1
-+    campaign["config"].write_text(json.dumps(changed))
-+    assert main(args) == 2
-+    assert json.loads(campaign["capsys"].readouterr().out)["reason"] == "launch_changed"
-+    assert not campaign["root"].exists()
-+    campaign["config"].write_text(json.dumps(original))
-+    assert main(args) == 0
-+    plan = project_service.read(campaign["root"] / "plan.json")
-+    assert (campaign["root"] / plan["intake_receipt"]).is_file()
-+
-+
-+@pytest.mark.parametrize(("mode", "direction", "expected", "good", "bad"), [
-+    ("absolute", "maximize", "accuracy >= 90 points (absolute threshold; higher is better)",
-+     90, 89.95),
-+    ("absolute", "minimize", "accuracy <= 90 points (absolute threshold; lower is better)",
-+     89.95, 90.05),
-+    ("baseline_comparison", "maximize",
-+     "accuracy >= baseline accuracy - 0.1 points (baseline comparison; higher is better; "
-+     "reference: retained baseline score for the current comparison epoch)", 89.95, 89.8),
-+    ("baseline_comparison", "minimize",
-+     "accuracy <= baseline accuracy + 0.1 points (baseline comparison; lower is better; "
-+     "reference: retained baseline score for the current comparison epoch)", 90.05, 90.2),
-+])
-+def test_executable_service_brief_describes_the_actual_quality_gate(
-+    campaign, mode, direction, expected, good, bad
-+):
-+    from inferrsi.apps.cli import task_intake
-+    from tests.fixtures.campaign_intake import approved_start
-+
-+    config = settings()
-+    quality = config["quality"]
-+    quality.update(mode=mode, direction=direction, key="accuracy")
-+    if mode == "absolute":
-+        quality["threshold"] = 90
-+    else:
-+        quality.pop("threshold")
-+        quality["tolerance"] = 0.1
-+    campaign["config"].write_text(json.dumps(config))
-+    args = approved_start(campaign["start"], overrides={"protocol.quality_unit": "points"})
-+    gate, _ = task_intake.campaign_gate(Path(args[-1]))
-+    assert gate["brief_review"] == "approved"
-+    assert gate["task_brief"]["quality_gate"] == expected
-+    assert expected in task_intake.render(gate)
-+    assert project_service.quality_passed(config, good, reference=90)
-+    assert not project_service.quality_passed(config, bad, reference=90)
-+
-+
-+def test_old_absolute_wording_cannot_approve_a_relative_service_gate(campaign):
-+    import hashlib
-+
-+    from inferrsi.apps.cli import task_intake

@@ -1,3 +1,54 @@
++        "id": _QUESTION + field["path"],
++        "field": field["path"],
++        "batch": field.get("batch", 1),
++        "question": field["question"],
++        "options": options,
++        "fallback": "unknown",
++        "depends_on": snapshot,
++    }
++
++
++def _frozen_conflicts(record: dict, spec: dict, frozen: dict | None) -> list[dict]:
++    if not frozen:
++        return []
++    conflicts = []
++    for field in spec["fields"]:
++        path = field["path"]
++        if not path.startswith(ACCEPTANCE) or path not in frozen:
++            continue
++        entry = _entry(record, path)
++        if entry.get("value") is None:
++            continue
++        if _canonical(entry["value"]) != _canonical(frozen[path]):
++            conflicts.append({
++                "field": path,
++                "message": "record value disagrees with the frozen gate record",
++                "record_value": entry["value"],
++                "frozen_value": frozen[path],
++            })
++    return conflicts
++
++
++def _service_quality_line(quality: dict, unit: str) -> str:
++    metric = quality["key"]
++    higher = quality["direction"] == "maximize"
++    direction = "higher is better" if higher else "lower is better"
++    operator = ">=" if higher else "<="
++    if quality["mode"] == "absolute":
++        limit = str(quality["threshold"]).removesuffix(".0")
++        return f"{metric} {operator} {limit} {unit} (absolute threshold; {direction})"
++    tolerance = str(quality["tolerance"]).removesuffix(".0")
++    sign = "-" if higher else "+"
++    return (f"{metric} {operator} baseline {metric} {sign} {tolerance} {unit} "
++            f"(baseline comparison; {direction}; reference: retained baseline score "
++            "for the current comparison epoch)")
++
++
++def _performance_brief(record: dict, spec: dict) -> dict:
++    values = {field["path"]: _coerce(field, record["fields"][field["path"]]["value"])
++              for field in spec["fields"] if _applicable(record, field)}
++    metric = values["acceptance.metric_key"]
++    target = str(values["protocol.target_value"]).removesuffix(".0")
 +    if values["protocol.target_kind"] == "relative_improvement_pct":
 +        performance = f"{metric}: improve by at least {target}% over the pinned baseline"
 +    else:
@@ -12,17 +63,17 @@
 +             "task": record["task"], "performance_target": performance, "quality_gate": quality,
 +             "benchmark": values["protocol.quality_benchmark"], "conditions": values}
 +    if "campaign_launch" in record:
-+        launch = record["campaign_launch"]
-+        if not isinstance(launch, dict):
-+            raise IntakeError("invalid_record", "campaign_launch must be an object")
-+        if launch.get("evaluation_mode") == "service_reuse":
-+            try:
-+                brief["quality_gate"] = _service_quality_line(
-+                    launch["evaluation_settings"]["quality"], values["protocol.quality_unit"])
-+            except (KeyError, TypeError) as exc:
-+                raise IntakeError("invalid_record",
-+                                  "Incomplete service quality conditions") from exc
-+        brief["campaign_launch"] = launch
++        brief["campaign_launch"] = record["campaign_launch"]
++        service_quality = _bound_service_quality(record)
++        if service_quality:
++            brief["quality_gate"] = _service_quality_line(
++                service_quality, values["protocol.quality_unit"])
++            values["protocol.quality_mode"] = service_quality["mode"]
++            values["protocol.quality_direction"] = service_quality["direction"]
++            if service_quality["mode"] == "baseline_comparison":
++                values["protocol.quality_baseline_tolerance"] = values.pop("protocol.quality_limit")
++                values["protocol.quality_reference"] = (
++                    "retained baseline score for the current comparison epoch")
 +    brief["id"] = _BRIEF_QUESTION + hashlib.sha256(_canonical(brief).encode()).hexdigest()
 +    return brief
 +
@@ -81,45 +132,3 @@
 +                stage == "candidate_search" and path.startswith(ACCEPTANCE)
 +                and status != "confirmed"
 +            ):
-+                blocked_by.append({"field": path, "status": status})
-+        if blocked_by:
-+            blockers.append({"stage": stage, "blocked_by": blocked_by})
-+    if conflicts:
-+        # A gate mismatch blocks candidate search even when every stated field
-+        # is otherwise settled: the accepted record is no longer the same gate.
-+        entries = [{"field": item["field"], "status": "conflicting"} for item in conflicts]
-+        existing = next((item for item in blockers if item["stage"] == "candidate_search"),
-+                        None)
-+        if existing is None:
-+            blockers.append({"stage": "candidate_search", "blocked_by": entries})
-+        else:
-+            existing["blocked_by"].extend(entries)
-+    brief = None
-+    review = "not_required"
-+    if spec["task"] == "task-performance":
-+        review = "collecting_inputs"
-+        if not blockers and not conflicts:
-+            brief = _performance_brief(record, spec)
-+            decision = record.get("brief_decision")
-+            review = "awaiting_confirmation"
-+            if decision == {"question": brief["id"], "value": "approve"}:
-+                review = "approved"
-+            elif decision == {"question": brief["id"], "value": "revise"}:
-+                review = "changes_requested"
-+            else:
-+                questions = [_brief_question(brief)]
-+        if review != "approved":
-+            for stage in ("baseline_measurement", "candidate_search"):
-+                blocker = next((item for item in blockers if item["stage"] == stage), None)
-+                if blocker is None:
-+                    blocker = {"stage": stage, "blocked_by": []}
-+                    blockers.append(blocker)
-+                blocker["blocked_by"].append({"field": "task_brief", "status": review})
-+    blocked_stages = {item["stage"] for item in blockers}
-+    # Device and service execution always need a separate authorization; the
-+    # record only unlocks preparation, baseline measurement and candidate search.
-+    allowed_next = ["read_only_preparation"] + [
-+        stage for stage in ("baseline_measurement", "candidate_search")
-+        if stage not in blocked_stages
-+    ]
-+    complete = not blockers and not conflicts

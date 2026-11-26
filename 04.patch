@@ -3,6 +3,9 @@
 +The bound brief displays an absolute score threshold or the allowed change from
 +the retained baseline for the current comparison epoch. Higher-is-better scores
 +may drop by the approved tolerance; lower-is-better scores may rise by it.
++The comparator applies to the candidate score in both modes. For a relative
++gate, the brief labels the numeric allowance as `protocol.quality_baseline_tolerance`
++and identifies the retained score in `protocol.quality_reference`.
 +
 +## Cards and text fallback
 +
@@ -95,9 +98,3 @@ index d039ebeff..bee9a8c2c 100644
 +Record it with `task intake answer` using the returned `q:task_brief:...` ID and
 +`approve` or `revise`. For revisions, apply the corrections and present the
 +entire updated brief on a fresh card. This final review also applies to a fully
-+specified initial prompt. Until approval, allow only read-only preparation.
-+Pass the approved record to `campaign start --intake <record.json>` and use its
-+criteria in the frozen protocol and final evaluation.
-+
- ## Optimize an ordinary user project
- 

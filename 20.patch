@@ -1,3 +1,82 @@
++      "path": "protocol.quality_failure_policy",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "choice",
++      "question": "What happens when a candidate fails the quality check?",
++      "options": [
++        {"value": "revert_candidate", "hint": "discard the candidate and keep the incumbent"},
++        {"value": "keep_with_flag", "hint": "retain the candidate but flag the quality gap"}
++      ],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.timing_boundary",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "Where is the timing boundary, and does it include queueing or transfer?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.repository",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which prepared repository is the baseline checkout?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.model",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which model identity or path does the run load?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.model_revision",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which model revision is pinned?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "optimization.framework",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which engine or framework serves the model?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.backend",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which backend runs the workload?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.device_model",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which device SKU or chip must the measurement use?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.workload",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which fixed workload, input set and concurrency replay for every trial?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
 +      "path": "environment.baseline_command",
 +      "maps_to": "task-input/v1",
 +      "batch": 2,
@@ -96,50 +175,3 @@ index b1eadd835..bd7db6544 100644
  def test_isolated_plugin_runs_project_round_and_retained_final(distribution, tmp_path, project):
      repo, protocol, instructions, root = project
      started = invoke(
--        distribution, tmp_path, "campaign", "start", "--directory", str(root),
-+        distribution, tmp_path, *approved_start(["campaign", "start", "--directory", str(root),
-         "--repo", str(repo), "--include", "engine.py", "--include", "config.json",
-         "--protocol", str(protocol), "--instructions", str(instructions),
-         "--measure-command", '"{python}" "{protocol}/measure.py" "{candidate}" "{result}"',
-@@ -76,6 +77,7 @@ def test_isolated_plugin_runs_project_round_and_retained_final(distribution, tmp
-         "--quality-key", "correct", "--scope", "synthetic-software-control",
-         "--min-improvement-pct", "1", "--warmups", "0", "--repetitions", "1",
-         "--rounds", "1", "--max-minutes", "5", "--evaluation-timeout-seconds", "30",
-+        "--python", "python3"]),
-     )
-     assert started.returncode == 0, started.stderr
-     diagnosed = invoke(distribution, tmp_path, *diagnosis_args(root, "campaign"))
-diff --git a/tests/apps/test_project_explanation.py b/tests/apps/test_project_explanation.py
-index d3a46329c..a556aaea1 100644
---- a/tests/apps/test_project_explanation.py
-+++ b/tests/apps/test_project_explanation.py
-@@ -11,6 +11,7 @@
- from inferrsi.apps.views.optimization_chart import render_result
- from inferrsi.harness.artifact_primitives import digest
- from inferrsi.harness.optimization import read_records
-+from tests.fixtures.campaign_intake import approved_start
- from tests.fixtures.diagnosis import diagnosis_args
- 
- # Device-wide factor applied to every timed value of one measurement call, cycling per
-@@ -56,7 +57,7 @@ def project(tmp_path):
- 
- def start(project, capsys, *extra, repetitions=8):
-     repo, protocol, instructions, root = project
--    code = main([
-+    code = main(approved_start([
-         "campaign", "start", "--directory", str(root), "--repo", str(repo),
-         "--include", "engine.py", "--include", "config.json", "--protocol", str(protocol),
-         "--instructions", str(instructions), "--measure-command",
-@@ -67,7 +68,7 @@ def start(project, capsys, *extra, repetitions=8):
-         "--repetitions", str(repetitions), "--warmups", "1", "--min-improvement-pct", "1",
-         "--rounds", "4", "--round-mode", "up_to", "--max-minutes", "5",
-         "--evaluation-timeout-seconds", "20", *extra,
--    ])
-+    ]))
-     if code == 0:  # Rounds require a retained bottleneck diagnosis (#519).
-         assert main(diagnosis_args(root, "campaign")) == 0
-     capsys.readouterr()
-diff --git a/tests/apps/test_project_optimization.py b/tests/apps/test_project_optimization.py
-index f4f2887d9..27defac60 100644
---- a/tests/apps/test_project_optimization.py
-+++ b/tests/apps/test_project_optimization.py
