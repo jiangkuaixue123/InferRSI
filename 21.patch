@@ -1,9 +1,41 @@
+@@ -12,6 +12,7 @@
+ from inferrsi.apps.views.dashboard import dashboard_snapshot, render_dashboard
+ from inferrsi.harness import optimization_session
+ from inferrsi.harness.optimization import read_records
++from tests.fixtures.campaign_intake import approved_start, preparation_arguments
+ from tests.fixtures.diagnosis import diagnosis_args
+ from tests.fixtures.session_process import kill_controller, target_python
+ 
+@@ -59,7 +60,8 @@ def start_arguments(project, *, direction="maximize", mode="up_to", extra=()):
+ 
+ 
+ def start(project, capsys, *, direction="maximize", mode="up_to", extra=()):
+-    assert main(start_arguments(project, direction=direction, mode=mode, extra=extra)) == 0
++    args = start_arguments(project, direction=direction, mode=mode, extra=extra)
++    assert main(approved_start(args)) == 0
+     result = json.loads(capsys.readouterr().out)
+     assert result["working_candidate"] == str(project[0])
+     assert result["next_action"] == "record_bottleneck_diagnosis"
+@@ -169,7 +171,7 @@ def find_spec(self, fullname, path=None, target=None):
+     ]
+     result = subprocess.run(
+         [sys.executable, "-X", "utf8", "-c", script],
+-        input=json.dumps({"start": start_arguments(project), "commands": commands,
++        input=json.dumps({"start": approved_start(start_arguments(project)), "commands": commands,
+                           "repo": str(repo), "root": str(root)}),
+         capture_output=True, text=True, encoding="utf-8", timeout=60,
+     )
+@@ -427,7 +429,7 @@ def test_project_knowledge_off_and_manual_record_writes_are_rejected(project, ca
+ 
+ def test_declared_paths_cannot_escape_project(project, capsys):
+     with pytest.raises(SystemExit):
+-        start(project, capsys, extra=("--include", "../protocol"))
 +        main(preparation_arguments(start_arguments(project, extra=("--include", "../protocol"))))
      assert not project[3].exists()
  
  
 diff --git a/tests/apps/test_project_service_reuse.py b/tests/apps/test_project_service_reuse.py
-index 1c99f94fe..eae4c2096 100644
+index 1c99f94fe..83e65ae16 100644
 --- a/tests/apps/test_project_service_reuse.py
 +++ b/tests/apps/test_project_service_reuse.py
 @@ -14,6 +14,7 @@
@@ -23,7 +55,7 @@ index 1c99f94fe..eae4c2096 100644
      campaign["capsys"].readouterr()
      assert not (campaign["root"] / "plan.json").exists()
  
-@@ -1518,3 +1519,27 @@ def test_mechanism_declaration_is_refused_in_service_mode(campaign, tmp_path):
+@@ -1518,3 +1519,90 @@ def test_mechanism_declaration_is_refused_in_service_mode(campaign, tmp_path):
      campaign["capsys"].readouterr()
      state = json.loads((campaign["root"] / "state.json").read_text())
      assert state["pending"] is None and not state.get("attempts", [])[1:]
@@ -51,93 +83,45 @@ index 1c99f94fe..eae4c2096 100644
 +    assert main(args) == 0
 +    plan = project_service.read(campaign["root"] / "plan.json")
 +    assert (campaign["root"] / plan["intake_receipt"]).is_file()
-diff --git a/tests/apps/test_task_intake.py b/tests/apps/test_task_intake.py
-new file mode 100644
-index 000000000..6b8d45924
---- /dev/null
-+++ b/tests/apps/test_task_intake.py
-@@ -0,0 +1,790 @@
-+"""intake/v1: spec validation, question selection, answers, conflicts and the campaign gate."""
-+
-+from __future__ import annotations
-+
-+import hashlib
-+import json
-+from pathlib import Path
-+
-+import pytest
-+
-+from inferrsi.apps import cli
-+from inferrsi.apps.cli import intake_contract as intake
-+from inferrsi.apps.cli import task_intake
-+from tests.apps.test_project_optimization import project, start_arguments  # noqa: F401
-+from tests.fixtures.campaign_intake import approved_start
-+
-+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "intake"
-+PERFORMANCE = FIXTURES / "performance"
-+COMPLETE = json.loads((PERFORMANCE / "complete.json").read_text(encoding="utf-8"))
-+PARTIAL = json.loads((PERFORMANCE / "partial.json").read_text(encoding="utf-8"))
-+ALL_VALUES = {**COMPLETE["fields"]["values"], **COMPLETE["acceptance"]["values"]}
 +
 +
-+def spec_for(task: str = "task-performance") -> dict:
-+    return task_intake.load_spec(task)
++@pytest.mark.parametrize(("mode", "direction", "expected", "good", "bad"), [
++    ("absolute", "maximize", "accuracy >= 90 points (absolute threshold; higher is better)",
++     90, 89.95),
++    ("absolute", "minimize", "accuracy <= 90 points (absolute threshold; lower is better)",
++     89.95, 90.05),
++    ("baseline_comparison", "maximize",
++     "accuracy >= baseline accuracy - 0.1 points (baseline comparison; higher is better; "
++     "reference: retained baseline score for the current comparison epoch)", 89.95, 89.8),
++    ("baseline_comparison", "minimize",
++     "accuracy <= baseline accuracy + 0.1 points (baseline comparison; lower is better; "
++     "reference: retained baseline score for the current comparison epoch)", 90.05, 90.2),
++])
++def test_executable_service_brief_describes_the_actual_quality_gate(
++    campaign, mode, direction, expected, good, bad
++):
++    from inferrsi.apps.cli import task_intake
++    from tests.fixtures.campaign_intake import approved_start
++
++    config = settings()
++    quality = config["quality"]
++    quality.update(mode=mode, direction=direction, key="accuracy")
++    if mode == "absolute":
++        quality["threshold"] = 90
++    else:
++        quality.pop("threshold")
++        quality["tolerance"] = 0.1
++    campaign["config"].write_text(json.dumps(config))
++    args = approved_start(campaign["start"], overrides={"protocol.quality_unit": "points"})
++    gate, _ = task_intake.campaign_gate(Path(args[-1]))
++    assert gate["brief_review"] == "approved"
++    assert gate["task_brief"]["quality_gate"] == expected
++    assert expected in task_intake.render(gate)
++    assert project_service.quality_passed(config, good, reference=90)
++    assert not project_service.quality_passed(config, bad, reference=90)
 +
 +
-+def build(paths: set[str] | None = None, *, task: str = "task-performance") -> dict:
-+    """A record built from the complete fixture, optionally restricted to ``paths``."""
-+    spec = spec_for(task)
-+    record = intake.new_record(task, record_id="intake-test")
-+    if task == "task-performance":
-+        chosen = {path: value for path, value in ALL_VALUES.items()
-+                  if paths is None or path in paths}
-+        stated = {path: value for path, value in chosen.items()
-+                  if path in COMPLETE["fields"]["values"]}
-+        accepted = {path: value for path, value in chosen.items()
-+                    if path in COMPLETE["acceptance"]["values"]}
-+        if stated:
-+            record = intake.set_fields(record, spec, stated, source="prompt")
-+        if accepted:
-+            accepted[intake.REFERENCE] = ALL_VALUES[intake.REFERENCE]
-+            record = intake.set_fields(record, spec, accepted, source="issue")
-+    return record
++def test_old_absolute_wording_cannot_approve_a_relative_service_gate(campaign):
++    import hashlib
 +
-+
-+def ask(record: dict, spec: dict, frozen: dict | None = None) -> tuple[dict, dict]:
-+    """Evaluate and persist the open questions, as the CLI does."""
-+    view = intake.evaluate(record, spec, frozen=frozen)
-+    record = json.loads(json.dumps(record))
-+    record["open_questions"] = view["questions"]
-+    return record, view
-+
-+
-+def batch_paths(spec: dict, batch: int) -> set[str]:
-+    return {field["path"] for field in spec["fields"] if field.get("batch", 1) == batch}
-+
-+
-+def test_packaged_specs_validate_and_declare_their_targets():
-+    for task in ("task-performance", "task-day-0"):
-+        spec = spec_for(task)
-+        assert spec["task"] == task
-+        assert intake.validate_spec(spec) == []
-+        assert all(field["maps_to"] in intake.MAP_TARGETS for field in spec["fields"])
-+
-+
-+def test_day0_fields_stay_out_of_task_input_v1():
-+    spec = spec_for("task-day-0")
-+    assert all(field["maps_to"] == "day0-spec" for field in spec["fields"])
-+
-+
-+def approved_record():
-+    record, view = ask(build(), spec_for())
-+    return intake.answer(record, spec_for(), question_id=view["task_brief"]["id"], value="approve")
-+
-+
-+def test_complete_fields_require_separate_review_before_search():
-+    spec = spec_for()
-+    record, view = ask(build(), spec)
-+    assert view["brief_review"] == "awaiting_confirmation"
-+    brief = view["task_brief"]
-+    assert brief["performance_target"] == "p95_ttft <= 180 ms"
-+    assert brief["quality_gate"] == "token mismatches <= 0 tokens"
-+    assert brief["benchmark"] == ALL_VALUES["protocol.quality_benchmark"]
++    from inferrsi.apps.cli import task_intake

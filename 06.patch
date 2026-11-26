@@ -1,3 +1,8 @@
++    answer.add_argument("--json", action="store_true")
++    summary = intake_actions.add_parser(
++        "summary", help="Readable confirmation summary with sources and next steps")
++    summary.add_argument("--record", type=Path, required=True)
++    summary.add_argument("--frozen", type=Path)
 +    summary.add_argument("--json", action="store_true")
  
      for name in ("status", "report"):
@@ -136,7 +141,3 @@ index 000000000..097303597
 +            if not args.prepare_intake and "campaign_launch" not in record:
 +                return _blocked(
 +                    "unbound_brief", message="Use --prepare-intake and review the executable brief."
-+                )
-+            with tempfile.TemporaryDirectory(prefix="inferrsi-intake-") as tmp:
-+                staged_args = copy.copy(args)
-+                staged_args.session = Path(tmp) / "campaign"

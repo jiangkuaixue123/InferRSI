@@ -1,3 +1,8 @@
+ Default to the current Agent conversation. Read `campaign start --help` through
+diff --git a/src/inferrsi/apps/cli/__init__.py b/src/inferrsi/apps/cli/__init__.py
+index c76418009..bea5d8991 100644
+--- a/src/inferrsi/apps/cli/__init__.py
++++ b/src/inferrsi/apps/cli/__init__.py
 @@ -32,7 +32,7 @@ def _round_provider(plan):
      return round_provider(plan)
  
@@ -107,8 +112,3 @@ index c6c241b2f..c77edf282 100644
 +    choice.add_argument("--unknown", action="store_true",
 +                        help="Record as unknown; dependent stages stay blocked")
 +    answer.add_argument("--frozen", type=Path)
-+    answer.add_argument("--json", action="store_true")
-+    summary = intake_actions.add_parser(
-+        "summary", help="Readable confirmation summary with sources and next steps")
-+    summary.add_argument("--record", type=Path, required=True)
-+    summary.add_argument("--frozen", type=Path)

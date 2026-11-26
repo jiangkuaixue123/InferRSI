@@ -1,3 +1,7 @@
++                continue  # same value, no stronger source: leave the record unchanged
++            updated["fields"][path] = entry
++            changed = True
++            continue
 +        if (current is not None and current.get("status") == "conflicting"
 +                and isinstance(current.get("candidates"), list)):
 +            # Only an explicit answer settles an open choice. Repeated imports
@@ -109,27 +113,26 @@
 +    return conflicts
 +
 +
++def _service_quality_line(quality: dict, unit: str) -> str:
++    if (quality["mode"] not in ("absolute", "baseline_comparison")
++            or quality["direction"] not in ("maximize", "minimize")):
++        raise IntakeError("invalid_record", "Unknown service quality mode or direction")
++    metric = quality["key"]
++    higher = quality["direction"] == "maximize"
++    direction = "higher is better" if higher else "lower is better"
++    operator = ">=" if higher else "<="
++    if quality["mode"] == "absolute":
++        limit = str(quality["threshold"]).removesuffix(".0")
++        return f"{metric} {operator} {limit} {unit} (absolute threshold; {direction})"
++    tolerance = str(quality["tolerance"]).removesuffix(".0")
++    sign = "-" if higher else "+"
++    return (f"{metric} {operator} baseline {metric} {sign} {tolerance} {unit} "
++            f"(baseline comparison; {direction}; reference: retained baseline score "
++            "for the current comparison epoch)")
++
++
 +def _performance_brief(record: dict, spec: dict) -> dict:
 +    values = {field["path"]: _coerce(field, record["fields"][field["path"]]["value"])
 +              for field in spec["fields"] if _applicable(record, field)}
 +    metric = values["acceptance.metric_key"]
 +    target = str(values["protocol.target_value"]).removesuffix(".0")
-+    if values["protocol.target_kind"] == "relative_improvement_pct":
-+        performance = f"{metric}: improve by at least {target}% over the pinned baseline"
-+    else:
-+        comparison = "<=" if values["acceptance.direction"] == "minimize" else ">="
-+        performance = f"{metric} {comparison} {target} {values['acceptance.metric_unit']}"
-+    operators = {"at_least": ">=", "at_most": "<=", "equal": "="}
-+    operator = operators[values["protocol.quality_comparator"]]
-+    limit = str(values["protocol.quality_limit"]).removesuffix(".0")
-+    quality = (f"{values['protocol.quality_metric']} {operator} "
-+               f"{limit} {values['protocol.quality_unit']}")
-+    brief = {"record_id": record["record_id"], "revision": record["revision"],
-+             "task": record["task"], "performance_target": performance, "quality_gate": quality,
-+             "benchmark": values["protocol.quality_benchmark"], "conditions": values}
-+    if "campaign_launch" in record:
-+        brief["campaign_launch"] = record["campaign_launch"]
-+    brief["id"] = _BRIEF_QUESTION + hashlib.sha256(_canonical(brief).encode()).hexdigest()
-+    return brief
-+
-+

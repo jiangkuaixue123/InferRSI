@@ -1,3 +1,36 @@
++    reference = intake.selected_reference(record)
++    reference_path = selected_path or (Path(reference) if reference else None)
++    if frozen_path and reference and reference_path.resolve() == frozen_path.resolve():
++        snapshot = {"reference": reference, "values": frozen}
++        if selecting_reference:
++            record["selected_gate"] = snapshot
++            record["selected_gate_file"] = str(frozen_path.resolve())
++        if record.get("selected_gate") == snapshot:
++            # Preserve disagreements for the frozen-gate comparison.
++            matching = {}
++            for field in spec["fields"]:
++                key = field["path"]
++                entry = record["fields"].get(key, {})
++                if key in frozen and entry.get("status") != "conflicting":
++                    if entry.get("value") in (None, frozen[key]):
++                        matching[key] = frozen[key]
++            record = intake.set_fields(record, spec, matching, source="frozen_gate")
++        else:
++            # The file is new or changed since the selection. Re-open the reference
++            # question and persist the revocation before handing off to campaign start.
++            record.pop("selected_gate", None)
++            record.pop("selected_gate_file", None)
++            record.pop("brief_decision", None)
++            record["fields"][intake.REFERENCE] = {
++                "value": reference, "source": "repo_inspection", "status": "assumed",
++            }
++            record["revision"] += 1
++    return record, frozen
++
++
++def _evaluate_and_save(path: Path, record: dict, spec: dict, frozen_path: Path | None,
++                       *, selecting_reference: bool) -> dict:
++    record, frozen = _evaluate_gate(record, spec, frozen_path,
 +                                    selecting_reference=selecting_reference)
 +    view = intake.evaluate(record, spec, frozen=frozen)
 +    _persist(path, record, view)
@@ -96,42 +129,3 @@
 +        record["revision"] += 1
 +    view = _evaluate_and_save(path, record, load_spec(record["task"]), None,
 +                              selecting_reference=False)
-+    return {**view, "status": "prepared", "execution": "not started"}
-+
-+
-+def attach_record(session_dir: Path, record: dict, gate: dict) -> dict:
-+    """Retain the gated record in the campaign directory and name its digest."""
-+    digest = write_record(Path(session_dir) / "intake.json", record)
-+    return {"intake": {
-+        "record": "intake.json",
-+        "task": record["task"],
-+        "revision": record["revision"],
-+        "sha256": digest,
-+        "brief_id": gate["task_brief"]["id"],
-+        "gate": gate["status"],
-+    }}
-+
-+
-+def _render_brief(view: dict) -> list[str]:
-+    brief = view["task_brief"]
-+    if not brief:
-+        return []
-+    return [f"Task brief (revision {brief['revision']}, {view['brief_review']})",
-+            f"Performance target: {brief['performance_target']}",
-+            f"Accuracy on {brief['benchmark']}: {brief['quality_gate']}",
-+            *(f"  {key}: {value}" for key, value in brief["conditions"].items()),
-+            *([json.dumps(brief["campaign_launch"], ensure_ascii=False, indent=2)]
-+              if "campaign_launch" in brief else [])]
-+
-+
-+def _render_questions(view: dict) -> list[str]:
-+    lines = []
-+    if view["questions"]:
-+        lines.append("Ask the user the following questions using the host question-card tool. "
-+                     "Wait for their reply before measurement or candidate work. "
-+                     "Use numbered text when the tool is unavailable.")
-+        lines.append("questions:")
-+        for question in view["questions"]:
-+            lines.append(f"  {question['id']}  {question['question']}")
-+            for option in question["options"]:
-+                hint = f"  ({option['hint']})" if option.get("hint") else ""

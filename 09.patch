@@ -1,3 +1,9 @@
++    return _entry(record, path).get("status") in SETTLED
++
++
++def _typed_value(field: dict, value: object) -> object:
++    kind = field.get("type", "text")
++    if kind == "number":
 +        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
 +            raise IntakeError("invalid_value", f"{field['path']} must be a finite number")
 +        try:
@@ -141,7 +147,3 @@
 +            current.get("value") == value
 +        ):
 +            if _rank(status) <= _rank(current.get("status", "unknown")):
-+                continue  # same value, no stronger source: leave the record unchanged
-+            updated["fields"][path] = entry
-+            changed = True
-+            continue

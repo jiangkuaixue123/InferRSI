@@ -1,3 +1,43 @@
++    return {
++        "schema_version": SCHEMA_VERSION,
++        "task": spec["task"],
++        "record_id": record["record_id"],
++        "revision": record["revision"],
++        "phase": record["phase"],
++        "primary_task": record["primary_task"],
++        "questions": questions,
++        "needs_user_input": bool(questions) or review == "changes_requested",
++        "brief_review": review,
++        "task_brief": brief,
++        "blockers": blockers,
++        "conflicts": conflicts,
++        "allowed_next": allowed_next,
++        "complete": complete,
++        "execution": "not started",
++        "fields": {
++            path: {"value": entry.get("value"), "source": entry.get("source"),
++                   "status": entry.get("status")}
++            for path, entry in record["fields"].items()
++        },
++    }
++
++
++def answer(record: dict, spec: dict, *, question_id: str, value: object = None,
++           unknown: bool = False) -> dict:
++    """Apply one answer to a copy of ``record``.
++
++    The question must be one ``evaluate`` previously recorded in
++    ``record["open_questions"]``; its dependency snapshot must still hold and
++    the field must still be open. A duplicate, stale or inapplicable delivery
++    is rejected, so a late reply to a superseded question changes nothing.
++    """
++    record = reconcile_record(record, spec)
++    open_questions = record.get("open_questions")
++    if not isinstance(open_questions, list):
++        raise IntakeError("invalid_record",
++                          "open_questions must be recorded by evaluate before answering")
++    question = next((item for item in open_questions
++                     if isinstance(item, dict) and item.get("id") == question_id), None)
 +    if question is None:
 +        answered = any(entry.get("source") == f"answer:{question_id}"
 +                       for entry in record["fields"].values())
@@ -99,37 +139,3 @@ index 7f5b3f8c0..613056ba4 100644
  
 -def _check(field: Field, value: object) -> str | None:
 +def field_value_problem(field: Field, value: object) -> str | None:
-     """Return why ``value`` (never None) is invalid for ``field``, or None."""
-     if not _encodable(value):
-         return "must be valid Unicode text"
-@@ -317,7 +317,7 @@ def validate(data: object) -> list[dict[str, str]]:
-             if field is None:
-                 errors.append(_error(f"{section}.{name}", "is not a v1 task field"))
-             elif value is not None:
--                problem = _check(field, value)
-+                problem = field_value_problem(field, value)
-                 if problem:
-                     errors.append(_error(field.path, problem))
-     return errors
-@@ -470,7 +470,7 @@ def merge(
-         raw = values.get(field.name) if isinstance(values, dict) else None
-         if field.section in sections and not isinstance(values, dict):
-             value, source = None, "invalid"
--        elif raw is not None and _check(field, raw) is None:
-+        elif raw is not None and field_value_problem(field, raw) is None:
-             value, source = _normalize(field, raw, base), "yaml"
-         elif raw is not None:
-             value, source = None, "invalid"
-@@ -481,7 +481,7 @@ def merge(
-         supplied = overrides.pop(field.dest, None) if field.dest else None
-         if supplied is not None:  # None means the caller did not supply the flag
-             supplied = _flag_value(field, supplied)
--            problem = _check(field, supplied)
-+            problem = field_value_problem(field, supplied)
-             if problem:
-                 errors.append(_error(field.path, f"{field.flag} {problem}", "cli"))
-             elif field.acceptance:
-diff --git a/src/inferrsi/apps/cli/task_intake.py b/src/inferrsi/apps/cli/task_intake.py
-new file mode 100644
-index 000000000..7643874a4
---- /dev/null

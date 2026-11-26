@@ -1,3 +1,42 @@
++    return {**view, "status": "prepared", "execution": "not started"}
++
++
++def attach_record(session_dir: Path, record: dict, gate: dict) -> dict:
++    """Retain the gated record in the campaign directory and name its digest."""
++    digest = write_record(Path(session_dir) / "intake.json", record)
++    return {"intake": {
++        "record": "intake.json",
++        "task": record["task"],
++        "revision": record["revision"],
++        "sha256": digest,
++        "brief_id": gate["task_brief"]["id"],
++        "gate": gate["status"],
++    }}
++
++
++def _render_brief(view: dict) -> list[str]:
++    brief = view["task_brief"]
++    if not brief:
++        return []
++    return [f"Task brief (revision {brief['revision']}, {view['brief_review']})",
++            f"Performance target: {brief['performance_target']}",
++            f"Accuracy on {brief['benchmark']}: {brief['quality_gate']}",
++            *(f"  {key}: {value}" for key, value in brief["conditions"].items()),
++            *([json.dumps(brief["campaign_launch"], ensure_ascii=False, indent=2)]
++              if "campaign_launch" in brief else [])]
++
++
++def _render_questions(view: dict) -> list[str]:
++    lines = []
++    if view["questions"]:
++        lines.append("Ask the user the following questions using the host question-card tool. "
++                     "Wait for their reply before measurement or candidate work. "
++                     "Use numbered text when the tool is unavailable.")
++        lines.append("questions:")
++        for question in view["questions"]:
++            lines.append(f"  {question['id']}  {question['question']}")
++            for option in question["options"]:
++                hint = f"  ({option['hint']})" if option.get("hint") else ""
 +                lines.append(f"      - {option['value']}{hint}")
 +            lines.append("      - unknown  (record as unknown; dependent stages stay blocked)")
 +    return lines
@@ -93,34 +132,3 @@ index 8a522793a..3ef1e569f 100644
                      retain_context=None, external_knowledge=None, external_provider=None,
                      external_project=None, external_provider_for=None,
 -                    report_metadata=None) -> dict:
-+                    report_metadata=None, initialize=None) -> dict:
-     """Run one operation; discovery and knowledge access are supplied by the caller."""
-     from inferrsi.harness import optimization
- 
-@@ -141,6 +143,8 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
-     if args.session_action == "start":
-         import math
- 
-+        initialize = initialize or optimization.initialize
-+
-         from inferrsi.harness.artifact_primitives import sha256
-         from inferrsi.harness.candidates import identity, retain
-         from inferrsi.harness.task_protocol import prepare
-@@ -205,7 +209,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
-                     "python": args.python,
-                     **settings,
-                 }
--                result = optimization.initialize(root, plan)
-+                result = initialize(root, plan)
-                 result["instructions"] = (
-                     "Run campaign baseline before candidate search. Record the measured "
-                     "bottleneck with campaign diagnose before knowledge or rounds. "
-@@ -272,7 +276,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
-             plan["external_knowledge_project"] = external_project
-         if report_metadata is not None:
-             plan["report_metadata"] = report_metadata
--        result = optimization.initialize(root, plan)
-+        result = initialize(root, plan)
-         operation = "campaign" if args.project_task else "benchmarks session"
-         result["instructions"] = (
-             f"Read the frozen TASK.md. Record the measured bottleneck with {operation} "

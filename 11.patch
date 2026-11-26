@@ -1,3 +1,32 @@
++    if values["protocol.target_kind"] == "relative_improvement_pct":
++        performance = f"{metric}: improve by at least {target}% over the pinned baseline"
++    else:
++        comparison = "<=" if values["acceptance.direction"] == "minimize" else ">="
++        performance = f"{metric} {comparison} {target} {values['acceptance.metric_unit']}"
++    operators = {"at_least": ">=", "at_most": "<=", "equal": "="}
++    operator = operators[values["protocol.quality_comparator"]]
++    limit = str(values["protocol.quality_limit"]).removesuffix(".0")
++    quality = (f"{values['protocol.quality_metric']} {operator} "
++               f"{limit} {values['protocol.quality_unit']}")
++    brief = {"record_id": record["record_id"], "revision": record["revision"],
++             "task": record["task"], "performance_target": performance, "quality_gate": quality,
++             "benchmark": values["protocol.quality_benchmark"], "conditions": values}
++    if "campaign_launch" in record:
++        launch = record["campaign_launch"]
++        if not isinstance(launch, dict):
++            raise IntakeError("invalid_record", "campaign_launch must be an object")
++        if launch.get("evaluation_mode") == "service_reuse":
++            try:
++                brief["quality_gate"] = _service_quality_line(
++                    launch["evaluation_settings"]["quality"], values["protocol.quality_unit"])
++            except (KeyError, TypeError) as exc:
++                raise IntakeError("invalid_record",
++                                  "Incomplete service quality conditions") from exc
++        brief["campaign_launch"] = launch
++    brief["id"] = _BRIEF_QUESTION + hashlib.sha256(_canonical(brief).encode()).hexdigest()
++    return brief
++
++
 +def _brief_question(brief: dict) -> dict:
 +    return {"id": brief["id"], "field": "task_brief",
 +            "question": "After reviewing the complete task brief, do you approve this revision?",
@@ -94,43 +123,3 @@
 +        if stage not in blocked_stages
 +    ]
 +    complete = not blockers and not conflicts
-+    return {
-+        "schema_version": SCHEMA_VERSION,
-+        "task": spec["task"],
-+        "record_id": record["record_id"],
-+        "revision": record["revision"],
-+        "phase": record["phase"],
-+        "primary_task": record["primary_task"],
-+        "questions": questions,
-+        "needs_user_input": bool(questions) or review == "changes_requested",
-+        "brief_review": review,
-+        "task_brief": brief,
-+        "blockers": blockers,
-+        "conflicts": conflicts,
-+        "allowed_next": allowed_next,
-+        "complete": complete,
-+        "execution": "not started",
-+        "fields": {
-+            path: {"value": entry.get("value"), "source": entry.get("source"),
-+                   "status": entry.get("status")}
-+            for path, entry in record["fields"].items()
-+        },
-+    }
-+
-+
-+def answer(record: dict, spec: dict, *, question_id: str, value: object = None,
-+           unknown: bool = False) -> dict:
-+    """Apply one answer to a copy of ``record``.
-+
-+    The question must be one ``evaluate`` previously recorded in
-+    ``record["open_questions"]``; its dependency snapshot must still hold and
-+    the field must still be open. A duplicate, stale or inapplicable delivery
-+    is rejected, so a late reply to a superseded question changes nothing.
-+    """
-+    record = reconcile_record(record, spec)
-+    open_questions = record.get("open_questions")
-+    if not isinstance(open_questions, list):
-+        raise IntakeError("invalid_record",
-+                          "open_questions must be recorded by evaluate before answering")
-+    question = next((item for item in open_questions
-+                     if isinstance(item, dict) and item.get("id") == question_id), None)

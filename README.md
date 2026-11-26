@@ -1,8 +1,8 @@
-# Full review diff for InferMatrixLab/InferRSI PR 706
+# Full review diff for PR 706
 
-Head `c80959595141ba5b1d3cfd3824fc1edcfdf00764` against base `51e475ad077ec88d60f9e8c561dc0415ca9855aa`. The 29 parts contain all 3,782 lines of the GitHub unified diff. Each part is at most 6,500 bytes and ends on a complete line. Continue from one part to the next when a file spans parts.
+The comparison covers base `51e475ad077ec88d60f9e8c561dc0415ca9855aa` and head `694ec791f5dde3f1aeee888551157a5fabfa10f3`. The 30 numbered text files contain every hunk of the GitHub API unified diff. Read the parts in order; each is at most 6,500 bytes and ends on a full line. [Pull request](https://github.com/InferMatrixLab/InferRSI/pull/706)
 
-GitHub reports 37 files, 3,174 additions and 35 deletions. Each per-file API patch matches its reported additions and deletions. Concatenation of the numbered parts reproduces all 185,114 bytes of the API diff, SHA-256 `fa0efdb3efcb34abdb4aae15ba9cc6e92112a37a45af484a8e5b26bf119d8781`. [Original PR](https://github.com/InferMatrixLab/InferRSI/pull/706)
+The GitHub file manifests report 37 files, 3,268 added lines and 35 deleted lines. Each API patch was checked against its reported counts. The concatenated parts reproduce all 189,953 bytes and 3,876 lines of the API diff, SHA-256 `786ab1ab826a1851f9683fda79b3c8a941815f6fa2d04752b6aa4be0b9ff0bb2`. Applying the full patch to the base Git index reproduced the exact tree of the reviewed head.
 
 ```sh
 cat [0-9][0-9].patch > full.diff
@@ -15,29 +15,30 @@ git -C <clean-checkout-at-base> apply --check < full.diff
 | [01.patch](01.patch) | 1–78 | 6431 |
 | [02.patch](02.patch) | 79–207 | 6483 |
 | [03.patch](03.patch) | 208–318 | 6438 |
-| [04.patch](04.patch) | 319–423 | 6491 |
-| [05.patch](05.patch) | 424–537 | 6486 |
-| [06.patch](06.patch) | 538–679 | 6409 |
-| [07.patch](07.patch) | 680–832 | 6482 |
-| [08.patch](08.patch) | 833–976 | 6471 |
-| [09.patch](09.patch) | 977–1123 | 6496 |
-| [10.patch](10.patch) | 1124–1258 | 6481 |
-| [11.patch](11.patch) | 1259–1394 | 6490 |
-| [12.patch](12.patch) | 1395–1529 | 6462 |
-| [13.patch](13.patch) | 1530–1686 | 6474 |
-| [14.patch](14.patch) | 1687–1823 | 6440 |
-| [15.patch](15.patch) | 1824–1949 | 6433 |
-| [16.patch](16.patch) | 1950–2070 | 6484 |
-| [17.patch](17.patch) | 2071–2201 | 6485 |
-| [18.patch](18.patch) | 2202–2340 | 6492 |
-| [19.patch](19.patch) | 2341–2527 | 6493 |
-| [20.patch](20.patch) | 2528–2657 | 6496 |
-| [21.patch](21.patch) | 2658–2800 | 6479 |
-| [22.patch](22.patch) | 2801–2925 | 6491 |
-| [23.patch](23.patch) | 2926–3057 | 6465 |
-| [24.patch](24.patch) | 3058–3181 | 6443 |
-| [25.patch](25.patch) | 3182–3298 | 6483 |
-| [26.patch](26.patch) | 3299–3416 | 6494 |
-| [27.patch](27.patch) | 3417–3551 | 6457 |
-| [28.patch](28.patch) | 3552–3683 | 6482 |
-| [29.patch](29.patch) | 3684–3782 | 3903 |
+| [04.patch](04.patch) | 319–421 | 6451 |
+| [05.patch](05.patch) | 422–535 | 6467 |
+| [06.patch](06.patch) | 536–678 | 6497 |
+| [07.patch](07.patch) | 679–830 | 6500 |
+| [08.patch](08.patch) | 831–973 | 6479 |
+| [09.patch](09.patch) | 974–1122 | 6496 |
+| [10.patch](10.patch) | 1123–1260 | 6492 |
+| [11.patch](11.patch) | 1261–1385 | 6487 |
+| [12.patch](12.patch) | 1386–1526 | 6451 |
+| [13.patch](13.patch) | 1527–1684 | 6453 |
+| [14.patch](14.patch) | 1685–1815 | 6471 |
+| [15.patch](15.patch) | 1816–1949 | 6459 |
+| [16.patch](16.patch) | 1950–2070 | 6465 |
+| [17.patch](17.patch) | 2071–2191 | 6495 |
+| [18.patch](18.patch) | 2192–2321 | 6480 |
+| [19.patch](19.patch) | 2322–2511 | 6472 |
+| [20.patch](20.patch) | 2512–2656 | 6495 |
+| [21.patch](21.patch) | 2657–2783 | 6463 |
+| [22.patch](22.patch) | 2784–2929 | 6481 |
+| [23.patch](23.patch) | 2930–3048 | 6445 |
+| [24.patch](24.patch) | 3049–3183 | 6491 |
+| [25.patch](25.patch) | 3184–3306 | 6500 |
+| [26.patch](26.patch) | 3307–3419 | 6456 |
+| [27.patch](27.patch) | 3420–3542 | 6467 |
+| [28.patch](28.patch) | 3543–3673 | 6482 |
+| [29.patch](29.patch) | 3674–3824 | 6464 |
+| [30.patch](30.patch) | 3825–3876 | 2242 |

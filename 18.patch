@@ -1,3 +1,44 @@
++      "question": "Which modalities or features must the first supported scope cover?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.reference_implementation",
++      "maps_to": "day0-spec",
++      "batch": 2,
++      "type": "text",
++      "question": "Which reference implementation produces the expected outputs?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.replayable_inputs",
++      "maps_to": "day0-spec",
++      "batch": 2,
++      "type": "text",
++      "question": "Which replayable inputs and fixtures anchor the stage-by-stage comparison?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.consistency_criteria",
++      "maps_to": "day0-spec",
++      "batch": 2,
++      "type": "text",
++      "question": "Which numeric or output-consistency criteria define supported behavior per stage?",
++      "required_before": ["device_execution"]
++    }
++  ]
++}
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
+index 76b25ae7c..9216d73ba 100644
+--- a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
+@@ -34,12 +34,52 @@ metadata:
+ 
+ ## Capture the actual run
+ 
++First evaluate a fresh `task-performance` intake record using only information the
++user stated. A generic optimization request leaves the objective, metric and
++quality check open, even in a repository with existing benchmarks. Before building
++or measuring, run `task intake evaluate --task task-performance --record <record.json>
 +--json`. When questions are returned, call the host's native question-card tool now
 +(on Codex Desktop, `request_user_input_async` when available). Ask the user which
 +outcome and quality check to use. Present repository-derived options as suggestions.
@@ -87,53 +128,3 @@ index 000000000..8a419ac33
 +      "required_before": ["candidate_search"]
 +    },
 +    {
-+      "path": "acceptance.direction",
-+      "maps_to": "task-input/v1",
-+      "batch": 1,
-+      "type": "choice",
-+      "question": "Should the metric go down or up?",
-+      "options": [
-+        {"value": "minimize", "hint": "lower is better"},
-+        {"value": "maximize", "hint": "higher is better"}
-+      ],
-+      "required_before": ["candidate_search"]
-+    },
-+    {
-+      "path": "acceptance.min_improvement_pct",
-+      "maps_to": "task-input/v1",
-+      "batch": 1,
-+      "type": "number",
-+      "question": "What minimum improvement is required to keep a candidate?",
-+      "depends_on": ["acceptance.metric_key"],
-+      "required_before": ["candidate_search"]
-+    },
-+    {
-+      "path": "acceptance.reference",
-+      "maps_to": "task-input/v1",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which acceptance issue or frozen plan states the gate?",
-+      "required_before": ["candidate_search"]
-+    },
-+    {
-+      "path": "acceptance.baseline_revision",
-+      "maps_to": "task-input/v1",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which baseline revision is pinned for this round?",
-+      "required_before": ["candidate_search"]
-+    },
-+    {
-+      "path": "protocol.target_kind",
-+      "user_choice": true,
-+      "maps_to": "summary-only",
-+      "batch": 1,
-+      "type": "choice",
-+      "question": "Is the final performance target an absolute metric bound or a percentage improvement over the pinned baseline?",
-+      "options": [{"value": "absolute"}, {"value": "relative_improvement_pct"}],
-+      "required_before": ["candidate_search"]
-+    },
-+    {
-+      "path": "protocol.target_value",
-+      "user_choice": true,
-+      "maps_to": "summary-only",

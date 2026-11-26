@@ -1,3 +1,7 @@
++                )
++            with tempfile.TemporaryDirectory(prefix="inferrsi-intake-") as tmp:
++                staged_args = copy.copy(args)
++                staged_args.session = Path(tmp) / "campaign"
 +                frozen = run_session(staged_args, initialize=lambda _, plan: {"plan": plan})
 +                plan = frozen["plan"]
 +                launch, expected = _execution(plan, args, staged_args.session)
@@ -47,10 +51,10 @@
 +    return {**result, "intake": receipt}
 diff --git a/src/inferrsi/apps/cli/intake_contract.py b/src/inferrsi/apps/cli/intake_contract.py
 new file mode 100644
-index 000000000..b19c72576
+index 000000000..e7e667063
 --- /dev/null
 +++ b/src/inferrsi/apps/cli/intake_contract.py
-@@ -0,0 +1,753 @@
+@@ -0,0 +1,781 @@
 +"""intake/v1: host-independent task intake records for missing-field confirmation.
 +
 +A card, a numbered text fallback and an optional check-in interview all write the
@@ -146,8 +150,3 @@ index 000000000..b19c72576
 +            continue
 +        path = field.get("path")
 +        if not isinstance(path, str) or not path.strip():
-+            bad(f"{where}.path", "must be a non-empty string")
-+        elif path in seen:
-+            bad(f"{where}.path", f"duplicates {path}")
-+        else:
-+            seen.add(path)

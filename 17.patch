@@ -1,3 +1,34 @@
++            from .project import meets_target
++
++            name = settings["ranking"][0]
++            objective = next(obj for obj in settings["objectives"] if obj["id"] == name)
++            gate["passed"] = meets_target(
++                target, baseline=initial["measurements"]["values"][name],
++                candidate=measured["values"][name], direction=objective["direction"])
++            if gate["passed"] is None:
++                raise ValueError("Undefined relative performance target against the baseline")
++            if not gate["passed"]:
++                gate["reason"] = ("final_performance_target_not_met" if role == "final"
++                                  else "performance_gate_not_met")
+         if not gate["passed"]:
+             skipped(("quality",), "performance_gate_not_met")
+             if role != "candidate":
+                 skipped(("profile",), "not_required")
+             record["assessment"] = assessment(
+-                "FAIL", "performance_gate_not_met", performance=gate
++                "FAIL", gate["reason"], performance=gate
+             )
+         elif pending.get("reference_kind") == "parent":
+             skipped(("quality", "profile"), "performance_reference_only")
+diff --git a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
+index 3abf1a04e..3e2192c56 100644
+--- a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
++++ b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
+@@ -1,7 +1,7 @@
+ {
+   "schema_version": 1,
+   "repository": "https://github.com/InferMatrixLab/InferRSI",
+-  "source_revision": "bf14fec0bd909efcfeb2bc02d69fe227d0c51ce6",
 +  "source_revision": "6f5775d29d3546732113900ef811d60a5943aa62",
    "registry": {
      "path": "src/inferrsi/knowledge/data/skill_library/skill-index.json",
@@ -88,44 +119,3 @@ index 000000000..d01200c5b
 +      "maps_to": "day0-spec",
 +      "batch": 1,
 +      "type": "text",
-+      "question": "Which modalities or features must the first supported scope cover?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.reference_implementation",
-+      "maps_to": "day0-spec",
-+      "batch": 2,
-+      "type": "text",
-+      "question": "Which reference implementation produces the expected outputs?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.replayable_inputs",
-+      "maps_to": "day0-spec",
-+      "batch": 2,
-+      "type": "text",
-+      "question": "Which replayable inputs and fixtures anchor the stage-by-stage comparison?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.consistency_criteria",
-+      "maps_to": "day0-spec",
-+      "batch": 2,
-+      "type": "text",
-+      "question": "Which numeric or output-consistency criteria define supported behavior per stage?",
-+      "required_before": ["device_execution"]
-+    }
-+  ]
-+}
-diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
-index 76b25ae7c..9216d73ba 100644
---- a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
-+++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
-@@ -34,12 +34,52 @@ metadata:
- 
- ## Capture the actual run
- 
-+First evaluate a fresh `task-performance` intake record using only information the
-+user stated. A generic optimization request leaves the objective, metric and
-+quality check open, even in a repository with existing benchmarks. Before building
-+or measuring, run `task intake evaluate --task task-performance --record <record.json>

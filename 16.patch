@@ -1,3 +1,34 @@
++                    report_metadata=None, initialize=None) -> dict:
+     """Run one operation; discovery and knowledge access are supplied by the caller."""
+     from inferrsi.harness import optimization
+ 
+@@ -141,6 +143,8 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
+     if args.session_action == "start":
+         import math
+ 
++        initialize = initialize or optimization.initialize
++
+         from inferrsi.harness.artifact_primitives import sha256
+         from inferrsi.harness.candidates import identity, retain
+         from inferrsi.harness.task_protocol import prepare
+@@ -205,7 +209,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
+                     "python": args.python,
+                     **settings,
+                 }
+-                result = optimization.initialize(root, plan)
++                result = initialize(root, plan)
+                 result["instructions"] = (
+                     "Run campaign baseline before candidate search. Record the measured "
+                     "bottleneck with campaign diagnose before knowledge or rounds. "
+@@ -272,7 +276,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
+             plan["external_knowledge_project"] = external_project
+         if report_metadata is not None:
+             plan["report_metadata"] = report_metadata
+-        result = optimization.initialize(root, plan)
++        result = initialize(root, plan)
+         operation = "campaign" if args.project_task else "benchmarks session"
+         result["instructions"] = (
+             f"Read the frozen TASK.md. Record the measured bottleneck with {operation} "
 diff --git a/src/inferrsi/harness/project.py b/src/inferrsi/harness/project.py
 index da27f389f..f1622844d 100644
 --- a/src/inferrsi/harness/project.py
@@ -88,34 +119,3 @@ index c1bcde2d3..1b7a7b564 100644
 +        elif role == "final":
 +            target = plan.get("performance_target")
 +        if target and gate["passed"]:
-+            from .project import meets_target
-+
-+            name = settings["ranking"][0]
-+            objective = next(obj for obj in settings["objectives"] if obj["id"] == name)
-+            gate["passed"] = meets_target(
-+                target, baseline=initial["measurements"]["values"][name],
-+                candidate=measured["values"][name], direction=objective["direction"])
-+            if gate["passed"] is None:
-+                raise ValueError("Undefined relative performance target against the baseline")
-+            if not gate["passed"]:
-+                gate["reason"] = ("final_performance_target_not_met" if role == "final"
-+                                  else "performance_gate_not_met")
-         if not gate["passed"]:
-             skipped(("quality",), "performance_gate_not_met")
-             if role != "candidate":
-                 skipped(("profile",), "not_required")
-             record["assessment"] = assessment(
--                "FAIL", "performance_gate_not_met", performance=gate
-+                "FAIL", gate["reason"], performance=gate
-             )
-         elif pending.get("reference_kind") == "parent":
-             skipped(("quality", "profile"), "performance_reference_only")
-diff --git a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
-index 3abf1a04e..3e2192c56 100644
---- a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
-+++ b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
-@@ -1,7 +1,7 @@
- {
-   "schema_version": 1,
-   "repository": "https://github.com/InferMatrixLab/InferRSI",
--  "source_revision": "bf14fec0bd909efcfeb2bc02d69fe227d0c51ce6",

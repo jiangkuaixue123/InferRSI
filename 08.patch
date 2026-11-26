@@ -1,3 +1,8 @@
++            bad(f"{where}.path", "must be a non-empty string")
++        elif path in seen:
++            bad(f"{where}.path", f"duplicates {path}")
++        else:
++            seen.add(path)
 +        if field.get("maps_to") not in MAP_TARGETS:
 +            bad(f"{where}.maps_to", f"must be one of {', '.join(MAP_TARGETS)}")
 +        if (field.get("maps_to") == "task-input/v1" and field.get("type") in ("integer", "number")
@@ -136,9 +141,3 @@
 +
 +
 +def _settled(record: dict, path: str) -> bool:
-+    return _entry(record, path).get("status") in SETTLED
-+
-+
-+def _typed_value(field: dict, value: object) -> object:
-+    kind = field.get("type", "text")
-+    if kind == "number":
