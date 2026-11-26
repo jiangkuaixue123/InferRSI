@@ -1,3 +1,29 @@
++    for key, value in invalid.items():
++        record["fields"][key]["value"] = value
++    record["complete"] = True
++    path.write_text(json.dumps(record))
++    assert cli.main(start_arguments(project, extra=("--intake", str(path)))) == 2
++    gate = json.loads(capsys.readouterr().out)
++    assert gate["status"] == "blocked" and gate["task_brief"] is None
++    assert gate["allowed_next"] == ["read_only_preparation"]
++    assert not project[3].exists()
++
++    cmd = ["task", "intake", "evaluate", "--record", str(path), "--json"]
++    assert cli.main(cmd) == 0
++    reopened = json.loads(capsys.readouterr().out)
++    assert all(reopened["fields"][key]["status"] == "unknown" for key in invalid)
++    assert "brief_decision" not in json.loads(path.read_text())
++    assert reopened["revision"] > record["revision"]
++    for key in ("environment.repetitions", "environment.max_minutes", "environment.rounds"):
++        assert cli.main(["task", "intake", "answer", "--record", str(path), "--json",
++                         "--question", f"q:{key}", "--value", "1"]) == 0
++        view = json.loads(capsys.readouterr().out)
++    assert view["brief_review"] == "awaiting_confirmation"
++    assert not view["complete"]
++
++
++@pytest.mark.parametrize(("flag", "value", "reason"), [
++    ("--metric-unit", "other", "launch_conflict"),
 +    ("--measure-command", "{python} {protocol}/different.py {result}", "launch_conflict"),
 +    ("--rounds", "2", "launch_conflict"),
 +    ("--quality-key", "different", "launch_changed"),
@@ -96,37 +122,3 @@
 +    args = approved_start(start_arguments(project), overrides={
 +        "protocol.quality_metric": "accuracy", "protocol.quality_limit": 95,
 +        "protocol.quality_comparator": "at_least", "protocol.quality_unit": "points"})
-+    assert cli.main(args) == 0
-+    capsys.readouterr()
-+    plan = json.loads((project[3] / "plan.json").read_bytes())
-+    assert plan["evaluation_settings"]["quality_benchmark"] == "fixture-exact-v1"
-+    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
-+    capsys.readouterr()
-+    code, result = submit(project, capsys, 20)
-+    assessment = result["latest_observation"]["assessment"]
-+    assert code == 2 and result["best"]["kind"] == "baseline"
-+    assert (assessment["verdict"], assessment["reason"]) == (
-+        "INCONCLUSIVE", "quality_benchmark_mismatch")
-diff --git a/tests/fixtures/campaign_intake.py b/tests/fixtures/campaign_intake.py
-new file mode 100644
-index 000000000..d5d0aa01f
---- /dev/null
-+++ b/tests/fixtures/campaign_intake.py
-@@ -0,0 +1,127 @@
-+"""Synthetic user approval for integration tests that exercise measured campaigns."""
-+
-+import io
-+import json
-+import shlex
-+from contextlib import redirect_stdout
-+from pathlib import Path
-+
-+from inferrsi.apps.cli import intake_contract as intake
-+from inferrsi.apps.cli import main, task_intake
-+from inferrsi.apps.cli.arguments import parser
-+from inferrsi.harness import candidates, project_service
-+
-+
-+def approved_start(arguments, *, overrides=None):
-+    args = parser().parse_args(arguments)
-+    path = args.session.with_suffix(".intake.json")

@@ -1,3 +1,8 @@
++            target = {"target_kind": "relative_improvement_pct",
++                      "target_value": plan["candidate_min_improvement_pct"]}
++        elif role == "final":
++            target = plan.get("performance_target")
++        if target and gate["passed"]:
 +            from .project import meets_target
 +
 +            name = settings["ranking"][0]
@@ -110,12 +115,3 @@ index 000000000..d01200c5b
 +      "path": "day0.target_engine_and_device",
 +      "maps_to": "day0-spec",
 +      "batch": 1,
-+      "type": "text",
-+      "question": "Which engine revision and target device must run the model?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.first_scope",
-+      "maps_to": "day0-spec",
-+      "batch": 1,
-+      "type": "text",

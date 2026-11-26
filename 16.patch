@@ -1,3 +1,11 @@
++    return lines
++
++
++def render(view: dict) -> str:
++    lines = [f"task: {view['task']}  revision: {view['revision']}  "
++             f"complete: {'true' if view['complete'] else 'false'}"]
++    lines.extend(_render_brief(view))
++    lines.extend(_render_questions(view))
 +    if view["conflicts"]:
 +        lines.append("conflicts:")
 +        for item in view["conflicts"]:
@@ -118,7 +126,3 @@ index 8a522793a..cadbf0b31 100644
              identity(repo, args.include)  # Reject invalid inputs before preparation writes.
              specification = {key: getattr(args, key) for key in (
 -                "metric_key", "metric_unit", "quality_key", "scope", "direction",
-+                "metric_key", "metric_unit", "quality_key", "quality_benchmark", "scope",
-+                "direction",
-                 "min_improvement_pct", "repetitions", "warmups", "decision",
-                 "require_explanation")}

@@ -1,3 +1,8 @@
+-            problem = _check(field, supplied)
++            problem = field_value_problem(field, supplied)
+             if problem:
+                 errors.append(_error(field.path, f"{field.flag} {problem}", "cli"))
+             elif field.acceptance:
 diff --git a/src/inferrsi/apps/cli/task_intake.py b/src/inferrsi/apps/cli/task_intake.py
 new file mode 100644
 index 000000000..1ee0ba447
@@ -154,11 +159,3 @@ index 000000000..1ee0ba447
 +
 +def _evaluate_and_save(path: Path, record: dict, spec: dict, frozen_path: Path | None,
 +                       *, selecting_reference: bool) -> dict:
-+    record, frozen = _evaluate_gate(record, spec, frozen_path,
-+                                    selecting_reference=selecting_reference)
-+    view = intake.evaluate(record, spec, frozen=frozen)
-+    _persist(path, record, view)
-+    return view
-+
-+
-+def evaluate_command(args) -> dict:

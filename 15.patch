@@ -1,3 +1,11 @@
++    record, frozen = _evaluate_gate(record, spec, frozen_path,
++                                    selecting_reference=selecting_reference)
++    view = intake.evaluate(record, spec, frozen=frozen)
++    _persist(path, record, view)
++    return view
++
++
++def evaluate_command(args) -> dict:
 +    record_path = Path(args.record)
 +    existing = record_path.is_file()
 +    if existing:
@@ -128,11 +136,3 @@
 +                hint = f"  ({option['hint']})" if option.get("hint") else ""
 +                lines.append(f"      - {option['value']}{hint}")
 +            lines.append("      - unknown  (record as unknown; dependent stages stay blocked)")
-+    return lines
-+
-+
-+def render(view: dict) -> str:
-+    lines = [f"task: {view['task']}  revision: {view['revision']}  "
-+             f"complete: {'true' if view['complete'] else 'false'}"]
-+    lines.extend(_render_brief(view))
-+    lines.extend(_render_questions(view))

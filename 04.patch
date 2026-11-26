@@ -18,11 +18,15 @@
 +`plan/` with the SHA-256 and revision of the retained `intake.json`.
 +
 +For AB/BA the two approved measurement commands describe the same script with
-+the candidate path supplied at execution. The quality command returns its
-+identity of the dataset actually scored in the top-level `dataset` field. It must
-+match both `--quality-benchmark` and the approved benchmark (including its version
-+and split). Missing or mismatched identity makes the result `INCONCLUSIVE`.
-+Also return the boolean acceptance key and a numeric result under the approved quality metric
++the candidate path supplied at execution. For a scored quality check, the
++frozen script self-reports the dataset it evaluated in the top-level `dataset`
++field. Harness compares that label with the approved `--quality-benchmark`,
++including its version and split. The script supplies the evidence for which
++corpus it loaded. A missing or mismatched label makes a scored result
++`INCONCLUSIVE`. An explicit `status: candidate_failure` is an unscored
++rejection. A candidate rejection is `FAIL`, and a baseline rejection leaves
++the comparison `INCONCLUSIVE`. A scored result also supplies the boolean
++acceptance key and a numeric result under the approved quality metric
 +(JSON dotted paths are supported). A boolean metric on the acceptance key is
 +compared as 1 or 0. The independent final checks the approved absolute bound or
 +relative improvement against the pinned baseline. For service reuse, the first
@@ -69,7 +73,7 @@ index 4d92f1500..c1850256a 100644
  - Verify without writing: `python tools/build_skill_coverage.py --check`
  
 diff --git a/plugins/inferrsi/skills/inferrsi/SKILL.md b/plugins/inferrsi/skills/inferrsi/SKILL.md
-index d039ebeff..ef146c194 100644
+index d039ebeff..e6118cc2e 100644
 --- a/plugins/inferrsi/skills/inferrsi/SKILL.md
 +++ b/plugins/inferrsi/skills/inferrsi/SKILL.md
 @@ -70,6 +70,60 @@ when the run requires it. During a frozen evaluation use the assigned entry
@@ -97,6 +101,3 @@ index d039ebeff..ef146c194 100644
 +has no native question tool. End the turn waiting for the reply. An asynchronous
 +tool acknowledgement, a preselected option and elapsed time leave the questions open.
 +
-+Only after the user's reply, record its values using `task intake answer --record
-+<record.json> --question <id> --value <value>` (or `--unknown`). Re-evaluate before
-+proceeding. Use `--source repo_inspection` for facts observed in the workspace.

@@ -1,3 +1,8 @@
++    payload = json.dumps(old_brief, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
++    old_id = "q:task_brief:" + hashlib.sha256(payload.encode()).hexdigest()
++    record["brief_decision"]["question"] = old_id
++    task_intake.write_record(path, record)
++    assert main(args) == 2
 +    reopened = json.loads(campaign["capsys"].readouterr().out)
 +    assert reopened["brief_review"] == "awaiting_confirmation"
 +    assert "baseline quality + 0.1 points" in reopened["task_brief"]["quality_gate"]
@@ -49,6 +54,20 @@
 +    assert prepared["task_brief"]["id"] != brief["id"]
 +    assert "quality >= baseline quality - 0.1 points" in prepared["task_brief"]["quality_gate"]
 +    assert not campaign["root"].exists()
+diff --git a/tests/apps/test_session_ranking_policy.py b/tests/apps/test_session_ranking_policy.py
+index 2b5b0b61a..13c2ed327 100644
+--- a/tests/apps/test_session_ranking_policy.py
++++ b/tests/apps/test_session_ranking_policy.py
+@@ -167,7 +167,8 @@ def test_project_assessor_uses_the_same_measurements_quality_and_threshold(proje
+         assert assessment["verdict"] == "PASS" and assessment["quality_passed"]
+         directory = arm[-1] / read(arm[-1] / "state.json")["rounds"][0]["path"]
+         samples = {p.parent.name: read(p) for p in (directory / "execution").glob("*/result.json")}
+-        assert {"metric": 20} in samples.values() and {"correct": True} in samples.values()
++        assert {"metric": 20} in samples.values()
++        assert {"correct": True, "dataset": "fixture-exact-v1"} in samples.values()
+         evidence.append((read(arm[-1] / "plan.json")["evaluation_settings"], samples,
+                          assessment["verdict"], assessment["score"], assessment["quality_passed"]))
+     assert evidence[0] == evidence[1]
 diff --git a/tests/apps/test_task_intake.py b/tests/apps/test_task_intake.py
 new file mode 100644
 index 000000000..4a9776b40
@@ -114,33 +133,3 @@ index 000000000..4a9776b40
 +
 +
 +def test_packaged_specs_validate_and_declare_their_targets():
-+    for task in ("task-performance", "task-day-0"):
-+        spec = spec_for(task)
-+        assert spec["task"] == task
-+        assert intake.validate_spec(spec) == []
-+        assert all(field["maps_to"] in intake.MAP_TARGETS for field in spec["fields"])
-+
-+
-+def test_day0_fields_stay_out_of_task_input_v1():
-+    spec = spec_for("task-day-0")
-+    assert all(field["maps_to"] == "day0-spec" for field in spec["fields"])
-+
-+
-+def approved_record():
-+    record, view = ask(build(), spec_for())
-+    return intake.answer(record, spec_for(), question_id=view["task_brief"]["id"], value="approve")
-+
-+
-+def test_complete_fields_require_separate_review_before_search():
-+    spec = spec_for()
-+    record, view = ask(build(), spec)
-+    assert view["brief_review"] == "awaiting_confirmation"
-+    brief = view["task_brief"]
-+    assert brief["performance_target"] == "p95_ttft <= 180 ms"
-+    assert brief["quality_gate"] == "token mismatches <= 0 tokens"
-+    assert brief["benchmark"] == ALL_VALUES["protocol.quality_benchmark"]
-+    assert brief["conditions"] == ALL_VALUES
-+    assert [q["id"] for q in view["questions"]] == [brief["id"]]
-+    assert not view["complete"] and view["needs_user_input"]
-+    assert view["allowed_next"] == ["read_only_preparation"]
-+    approved = intake.evaluate(approved_record(), spec)

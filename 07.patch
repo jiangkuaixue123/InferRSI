@@ -1,3 +1,6 @@
++                "protocol.timing_boundary": settings["conditions"]["timing_scope"],
++                "optimization.workload": settings["conditions"]["workload"],
++                "optimization.model": settings["conditions"]["model"],
 +                "environment.repetitions": settings["sampling"]["baseline"]["repetitions"],
 +            }
 +        )
@@ -125,9 +128,3 @@
 +        shutil.rmtree(destination)
 +        raise
 +    return {**result, "intake": receipt}
-diff --git a/src/inferrsi/apps/cli/intake_contract.py b/src/inferrsi/apps/cli/intake_contract.py
-new file mode 100644
-index 000000000..ce197875d
---- /dev/null
-+++ b/src/inferrsi/apps/cli/intake_contract.py
-@@ -0,0 +1,808 @@

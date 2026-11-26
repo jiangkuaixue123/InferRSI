@@ -1,3 +1,7 @@
++                "metric_key", "metric_unit", "quality_key", "quality_benchmark", "scope",
++                "direction",
+                 "min_improvement_pct", "repetitions", "warmups", "decision",
+                 "require_explanation")}
              specification.update(measure_command=shlex.split(args.measure_command),
 @@ -272,7 +278,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
              plan["external_knowledge_project"] = external_project
@@ -109,8 +113,3 @@ index c1bcde2d3..1b7a7b564 100644
          )
 +        target = None
 +        if role == "candidate" and "candidate_min_improvement_pct" in plan:
-+            target = {"target_kind": "relative_improvement_pct",
-+                      "target_value": plan["candidate_min_improvement_pct"]}
-+        elif role == "final":
-+            target = plan.get("performance_target")
-+        if target and gate["passed"]:

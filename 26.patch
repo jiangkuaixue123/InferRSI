@@ -1,3 +1,31 @@
++    record = intake.new_record("task-performance", record_id="intake-conflict")
++    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p95_ttft"},
++                               source="prompt")
++    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p99_ttft"},
++                               source="prompt")
++    assert record["fields"]["acceptance.metric_key"]["status"] == "conflicting"
++    record, view = ask(record, spec)
++    question = view["questions"][0]
++    assert question["field"] == "acceptance.metric_key"
++    values = {option["value"] for option in question["options"]}
++    assert values == {"p95_ttft", "p99_ttft"}
++
++
++@pytest.mark.parametrize("selected", ["p95_ttft", "p99_ttft"])
++def test_metric_conflict_card_then_matching_issue_confirmation(tmp_path, capsys, selected):
++    path = tmp_path / "intake.json"
++    record = ["--record", str(path), "--json"]
++    metric = "acceptance.metric_key"
++    reference = "selected acceptance issue"
++
++    def call(*args):
++        assert cli.main(["task", "intake", *args, *record]) == 0
++        return json.loads(capsys.readouterr().out)
++
++    call("evaluate", "--task", "task-performance", "--set", f"{intake.REFERENCE}={reference}",
++         "--set", f"{metric}=p95_ttft")
++    view = call("evaluate", "--set", f"{metric}=p99_ttft")
++    card = view["questions"][0]
 +    assert card["field"] == metric
 +    assert {opt["value"] for opt in card["options"]} == {"p95_ttft", "p99_ttft"}
 +    assert call("evaluate", "--set", f"{metric}={selected}")["revision"] == view["revision"]
@@ -102,31 +130,3 @@
 +    assert cli.main(["task", "intake", "evaluate", "--record", str(record_path),
 +                     "--set", "acceptance.metric_key=p99_ttft", "--json"]) == 0
 +    capsys.readouterr()
-+    assert cli.main(["task", "intake", "answer", "--record", str(record_path),
-+                     "--question", question["id"], "--value", "5", "--json"]) == 2
-+    error = json.loads(capsys.readouterr().out)
-+    assert error["error"] in ("stale_answer", "already_answered")
-+
-+
-+def test_frozen_values_read_the_gate_task_file():
-+    values = task_intake.frozen_values(PERFORMANCE / "frozen-gate.yaml")
-+    assert values["acceptance.metric_key"] == "p95_ttft"
-+    assert values["acceptance.min_improvement_pct"] == 10.0
-+    assert "acceptance.reference" not in values
-+
-+
-+def test_matching_frozen_gate_keeps_a_complete_record_complete():
-+    frozen = task_intake.frozen_values(PERFORMANCE / "frozen-gate.yaml")
-+    view = intake.evaluate(approved_record(), spec_for(), frozen=frozen)
-+    assert view["conflicts"] == [] and view["complete"] is True
-+
-+
-+@pytest.mark.parametrize("source", ["prompt", "task_file", "grilling_brief", "repo_inspection"])
-+def test_only_the_issue_or_frozen_record_confirms_an_acceptance_value(source):
-+    spec = spec_for()
-+    record = intake.new_record("task-performance", record_id="intake-source")
-+    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p95_ttft"}, source=source)
-+    expected = "proposed" if source in ("prompt", "grilling_brief") else "assumed"
-+    assert record["fields"]["acceptance.metric_key"]["status"] == expected
-+
-+

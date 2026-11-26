@@ -1,3 +1,12 @@
++      "type": "text",
++      "question": "Which engine revision and target device must run the model?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.first_scope",
++      "maps_to": "day0-spec",
++      "batch": 1,
++      "type": "text",
 +      "question": "Which modalities or features must the first supported scope cover?",
 +      "required_before": ["device_execution"]
 +    },
@@ -117,14 +126,3 @@ index 000000000..8a419ac33
 +        {"value": "p95_tpot", "hint": "p95 time per output token"},
 +        {"value": "peak_memory", "hint": "peak device memory under the fixed load"}
 +      ],
-+      "required_before": ["baseline_measurement", "candidate_search"]
-+    },
-+    {
-+      "path": "acceptance.metric_unit",
-+      "maps_to": "task-input/v1",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which unit does the metric use?",
-+      "required_before": ["candidate_search"]
-+    },
-+    {

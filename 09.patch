@@ -1,3 +1,9 @@
++def new_record(task: str, *, record_id: str, primary_source: str = "prompt") -> dict:
++    """An empty intake record for ``task`` with a confirmed primary task."""
++    return {
++        "schema_version": SCHEMA_VERSION,
++        "record_id": record_id,
++        "revision": 1,
 +        "task": task,
 +        "primary_task": {"value": task, "source": primary_source, "status": "confirmed"},
 +        "phase": "intake",
@@ -151,9 +157,3 @@
 +    if not reference or entry.get("authority_reference") != reference:
 +        return False
 +    snapshot = record.get("selected_gate")
-+    if isinstance(snapshot, dict) and snapshot.get("reference") == reference:
-+        return (entry["source"] == "frozen_gate"
-+                and snapshot["values"].get(path) == entry.get("value"))
-+    return entry["source"] == "issue"
-+
-+

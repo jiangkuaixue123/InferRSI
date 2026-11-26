@@ -1,3 +1,12 @@
++      "path": "optimization.workload",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which fixed workload, input set and concurrency replay for every trial?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
 +      "path": "environment.baseline_command",
 +      "maps_to": "task-input/v1",
 +      "batch": 2,
@@ -136,9 +145,3 @@ index d3a46329c..aa86a038b 100644
      instructions = tmp_path / "task.md"
 @@ -56,18 +58,19 @@ def project(tmp_path):
  
- def start(project, capsys, *extra, repetitions=8):
-     repo, protocol, instructions, root = project
--    code = main([
-+    code = main(approved_start([
-         "campaign", "start", "--directory", str(root), "--repo", str(repo),
-         "--include", "engine.py", "--include", "config.json", "--protocol", str(protocol),

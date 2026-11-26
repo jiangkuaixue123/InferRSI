@@ -1,3 +1,25 @@
++        assert cli.main([*cmd, *options, "--source", source, *args]) == 0
++        result = json.loads(capsys.readouterr().out)
++    assert result["needs_user_input"] and not result["complete"]
++    assert result["allowed_next"] == ["read_only_preparation"]
++    questions = {q["field"]: q for q in result["questions"]}
++    assert {"optimization.objective", "acceptance.metric_key", intake.REFERENCE} <= questions.keys()
++    metric_option = questions["acceptance.metric_key"]["options"][0]
++    assert metric_option["value"] == proposed["acceptance.metric_key"]
++    assert result["fields"]["environment.backend"]["status"] == "confirmed"
++    assert result["fields"]["optimization.objective"]["status"] == "assumed"
++    assert result["fields"]["acceptance.metric_key"]["status"] == "assumed"
++    assert cli.main([*cmd, "--set", f"{intake.REFERENCE}={gate_file}"]) == 2
++    assert json.loads(capsys.readouterr().out)["error"] == "user_answer_required"
++    assert cli.main(start_arguments(project, extra=("--intake", str(record_path)))) == 2
++    capsys.readouterr()
++    assert not project[3].exists()
++
++    record = json.loads(record_path.read_text())
++    for field in record["fields"].values():
++        field["status"] = "confirmed"
++    record.update(complete=True, open_questions=[], allowed_next=["candidate_search"])
++    record_path.write_text(json.dumps(record))
 +    assert task_intake.campaign_gate(record_path)[0]["status"] == "blocked"
 +
 +
@@ -89,26 +111,3 @@
 +    with pytest.raises(intake.IntakeError):
 +        intake.answer(changed, spec, question_id=review, value="approve")
 +    changed, _ = ask(changed, spec)
-+    changed = intake.answer(changed, spec, question_id="q:protocol.target_kind",
-+                            value="relative_improvement_pct")
-+    changed, next_view = ask(changed, spec)
-+    assert "12%" in next_view["task_brief"]["performance_target"]
-+    assert next_view["task_brief"]["id"] != review
-+    assert next_view["brief_review"] == "awaiting_confirmation"
-+    assert intake.answer(changed, spec, question_id=next_view["task_brief"]["id"],
-+                         value="approve")["brief_decision"]["value"] == "approve"
-+
-+
-+@pytest.mark.parametrize("reply", [{"value": "revise"}, {"unknown": True}])
-+def test_returned_brief_waits_for_edits_then_requires_new_review(reply):
-+    spec = spec_for()
-+    record, view = ask(build(), spec)
-+    record = intake.answer(record, spec, question_id=view["task_brief"]["id"], **reply)
-+    view = intake.evaluate(record, spec)
-+    assert not view["complete"] and not view["questions"]
-+    assert view["brief_review"] == "changes_requested"
-+    with pytest.raises(intake.IntakeError):
-+        intake.answer(record, spec, question_id=view["task_brief"]["id"], value="approve")
-+    edited = intake.set_fields(record, spec, {"protocol.quality_limit": 2}, source="prompt")
-+    edited, _ = ask(edited, spec)
-+    edited = intake.answer(edited, spec, question_id="q:protocol.quality_limit", value=2)

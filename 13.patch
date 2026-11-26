@@ -1,3 +1,8 @@
++                     if isinstance(item, dict) and item.get("id") == question_id), None)
++    if question is None:
++        answered = any(entry.get("source") == f"answer:{question_id}"
++                       for entry in record["fields"].values())
++        if answered:
 +            raise IntakeError("already_answered",
 +                              f"{question_id} was already recorded; re-evaluate for "
 +                              "current questions")
@@ -125,8 +130,3 @@ index 7f5b3f8c0..613056ba4 100644
          supplied = overrides.pop(field.dest, None) if field.dest else None
          if supplied is not None:  # None means the caller did not supply the flag
              supplied = _flag_value(field, supplied)
--            problem = _check(field, supplied)
-+            problem = field_value_problem(field, supplied)
-             if problem:
-                 errors.append(_error(field.path, f"{field.flag} {problem}", "cli"))
-             elif field.acceptance:

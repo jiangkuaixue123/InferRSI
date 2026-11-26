@@ -1,3 +1,9 @@
+diff --git a/src/inferrsi/apps/cli/intake_contract.py b/src/inferrsi/apps/cli/intake_contract.py
+new file mode 100644
+index 000000000..ce197875d
+--- /dev/null
++++ b/src/inferrsi/apps/cli/intake_contract.py
+@@ -0,0 +1,808 @@
 +"""intake/v1: host-independent task intake records for missing-field confirmation.
 +
 +A card, a numbered text fallback and an optional check-in interview all write the
@@ -148,9 +154,3 @@
 +    return spec
 +
 +
-+def new_record(task: str, *, record_id: str, primary_source: str = "prompt") -> dict:
-+    """An empty intake record for ``task`` with a confirmed primary task."""
-+    return {
-+        "schema_version": SCHEMA_VERSION,
-+        "record_id": record_id,
-+        "revision": 1,

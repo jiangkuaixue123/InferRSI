@@ -1,3 +1,6 @@
++Only after the user's reply, record its values using `task intake answer --record
++<record.json> --question <id> --value <value>` (or `--unknown`). Re-evaluate before
++proceeding. Use `--source repo_inspection` for facts observed in the workspace.
 +A benchmark, previous run or agent-written gate may suggest conditions. The user
 +must identify the acceptance issue or frozen plan, directly or in an answer.
 +Use `--frozen <user-selected-file>` for its acceptance values. Preserve unresolved
@@ -31,13 +34,14 @@
  ## Optimize an ordinary user project
  
  Default to the current Agent conversation. Read `campaign start --help` through
-@@ -87,6 +141,9 @@ Declare every execution input with repeatable `--include`; freeze scripts and
+@@ -87,6 +141,10 @@ Declare every execution input with repeatable `--include`; freeze scripts and
  inputs through `--protocol`. Checks must use the retained `{candidate}`,
  `{baseline}`, `{protocol}` and output `{result}` paths as appropriate. Confirm
  they execute the submitted code, not an unrelated installed package or service.
 +For AB/BA, pass the approved dataset version and split as `--quality-benchmark`.
-+The quality script must report the identity of the corpus it actually scored in
-+the top-level `dataset` field alongside the quality result.
++For a scored result, the quality script self-reports the corpus it evaluated in
++the top-level `dataset` field. Harness checks the reported label against the
++approved identity.
  This command uses the same Harness controller as the packaged task path below.
  
  Edit the returned working candidate. Submit each hypothesis and candidate with
@@ -108,6 +112,3 @@ index c6c241b2f..03896bdfd 100644
          start.add_argument("--evaluation-config", type=Path,
                             help="Explicit service-reuse JSON protocol (required in that mode)")
 +        start.add_argument("--intake", type=Path,
-+                           help="intake/v1 record; the campaign refuses to start until it is "
-+                                "complete for the performance task")
-+        start.add_argument("--prepare-intake", action="store_true",

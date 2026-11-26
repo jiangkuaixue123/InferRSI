@@ -50,7 +50,7 @@ index 24a168e62..d88200aed 100644
    [shared workflow](optimization-workflow-unification.md) defines round limits,
    recovery and dashboard generation from the Harness control record.
 diff --git a/docs/guides/optimization-workflow-unification.md b/docs/guides/optimization-workflow-unification.md
-index 09d2465f9..785f3d7e9 100644
+index 09d2465f9..18cde2bd7 100644
 --- a/docs/guides/optimization-workflow-unification.md
 +++ b/docs/guides/optimization-workflow-unification.md
 @@ -170,14 +170,17 @@ Harness 没有常驻 Agent 驱动。Agent 逐次调用这些操作，代码在

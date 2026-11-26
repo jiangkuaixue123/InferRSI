@@ -1,3 +1,9 @@
++    if isinstance(snapshot, dict) and snapshot.get("reference") == reference:
++        return (entry["source"] == "frozen_gate"
++                and snapshot["values"].get(path) == entry.get("value"))
++    return entry["source"] == "issue"
++
++
 +def _bound_service_quality(record: dict) -> dict | None:
 +    launch = record.get("campaign_launch", {})
 +    if not isinstance(launch, dict):
@@ -119,8 +125,3 @@
 +                                           "candidates": [
 +                                               {"value": current["value"],
 +                                                "source": current.get("source", "unknown")},
-+                                               {"value": value, "source": source},
-+                                           ]}
-+                changed = True
-+            continue
-+        if current is not None and current.get("asked") and status != "assumed":

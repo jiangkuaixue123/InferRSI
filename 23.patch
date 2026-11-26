@@ -1,3 +1,9 @@
+     assert main(["campaign", "final", "--directory", str(project[3]),
+diff --git a/tests/apps/test_project_service_reuse.py b/tests/apps/test_project_service_reuse.py
+index 1c99f94fe..4122efd33 100644
+--- a/tests/apps/test_project_service_reuse.py
++++ b/tests/apps/test_project_service_reuse.py
+@@ -14,6 +14,7 @@
  from inferrsi.apps.cli.arguments import parser
  from inferrsi.apps.delivery import project, read_bundle
  from inferrsi.harness import optimization, project_service
@@ -117,8 +123,3 @@
 +    old_fields["protocol.quality_limit"] = old_fields.pop("protocol.quality_baseline_tolerance")
 +    for key in ("quality_reference", "quality_direction", "quality_mode"):
 +        old_fields.pop("protocol." + key)
-+    payload = json.dumps(old_brief, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-+    old_id = "q:task_brief:" + hashlib.sha256(payload.encode()).hexdigest()
-+    record["brief_decision"]["question"] = old_id
-+    task_intake.write_record(path, record)
-+    assert main(args) == 2

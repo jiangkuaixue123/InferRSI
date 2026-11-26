@@ -1,3 +1,26 @@
++    changed = intake.answer(changed, spec, question_id="q:protocol.target_kind",
++                            value="relative_improvement_pct")
++    changed, next_view = ask(changed, spec)
++    assert "12%" in next_view["task_brief"]["performance_target"]
++    assert next_view["task_brief"]["id"] != review
++    assert next_view["brief_review"] == "awaiting_confirmation"
++    assert intake.answer(changed, spec, question_id=next_view["task_brief"]["id"],
++                         value="approve")["brief_decision"]["value"] == "approve"
++
++
++@pytest.mark.parametrize("reply", [{"value": "revise"}, {"unknown": True}])
++def test_returned_brief_waits_for_edits_then_requires_new_review(reply):
++    spec = spec_for()
++    record, view = ask(build(), spec)
++    record = intake.answer(record, spec, question_id=view["task_brief"]["id"], **reply)
++    view = intake.evaluate(record, spec)
++    assert not view["complete"] and not view["questions"]
++    assert view["brief_review"] == "changes_requested"
++    with pytest.raises(intake.IntakeError):
++        intake.answer(record, spec, question_id=view["task_brief"]["id"], value="approve")
++    edited = intake.set_fields(record, spec, {"protocol.quality_limit": 2}, source="prompt")
++    edited, _ = ask(edited, spec)
++    edited = intake.answer(edited, spec, question_id="q:protocol.quality_limit", value=2)
 +    assert intake.evaluate(edited, spec)["brief_review"] == "awaiting_confirmation"
 +
 +
@@ -92,29 +115,3 @@
 +    record = approved_record()
 +    invalid = {"environment.repetitions": 0, "environment.rounds": -1,
 +               "environment.max_minutes": -5}
-+    for key, value in invalid.items():
-+        record["fields"][key]["value"] = value
-+    record["complete"] = True
-+    path.write_text(json.dumps(record))
-+    assert cli.main(start_arguments(project, extra=("--intake", str(path)))) == 2
-+    gate = json.loads(capsys.readouterr().out)
-+    assert gate["status"] == "blocked" and gate["task_brief"] is None
-+    assert gate["allowed_next"] == ["read_only_preparation"]
-+    assert not project[3].exists()
-+
-+    cmd = ["task", "intake", "evaluate", "--record", str(path), "--json"]
-+    assert cli.main(cmd) == 0
-+    reopened = json.loads(capsys.readouterr().out)
-+    assert all(reopened["fields"][key]["status"] == "unknown" for key in invalid)
-+    assert "brief_decision" not in json.loads(path.read_text())
-+    assert reopened["revision"] > record["revision"]
-+    for key in ("environment.repetitions", "environment.max_minutes", "environment.rounds"):
-+        assert cli.main(["task", "intake", "answer", "--record", str(path), "--json",
-+                         "--question", f"q:{key}", "--value", "1"]) == 0
-+        view = json.loads(capsys.readouterr().out)
-+    assert view["brief_review"] == "awaiting_confirmation"
-+    assert not view["complete"]
-+
-+
-+@pytest.mark.parametrize(("flag", "value", "reason"), [
-+    ("--metric-unit", "other", "launch_conflict"),

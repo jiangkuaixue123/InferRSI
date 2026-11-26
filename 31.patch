@@ -1,3 +1,37 @@
++    assert cli.main(args) == 0
++    capsys.readouterr()
++    plan = json.loads((project[3] / "plan.json").read_bytes())
++    assert plan["evaluation_settings"]["quality_benchmark"] == "fixture-exact-v1"
++    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
++    capsys.readouterr()
++    code, result = submit(project, capsys, 20)
++    assessment = result["latest_observation"]["assessment"]
++    assert code == 2 and result["best"]["kind"] == "baseline"
++    assert (assessment["verdict"], assessment["reason"]) == (
++        "INCONCLUSIVE", "quality_benchmark_mismatch")
+diff --git a/tests/fixtures/campaign_intake.py b/tests/fixtures/campaign_intake.py
+new file mode 100644
+index 000000000..d5d0aa01f
+--- /dev/null
++++ b/tests/fixtures/campaign_intake.py
+@@ -0,0 +1,127 @@
++"""Synthetic user approval for integration tests that exercise measured campaigns."""
++
++import io
++import json
++import shlex
++from contextlib import redirect_stdout
++from pathlib import Path
++
++from inferrsi.apps.cli import intake_contract as intake
++from inferrsi.apps.cli import main, task_intake
++from inferrsi.apps.cli.arguments import parser
++from inferrsi.harness import candidates, project_service
++
++
++def approved_start(arguments, *, overrides=None):
++    args = parser().parse_args(arguments)
++    path = args.session.with_suffix(".intake.json")
 +    fixture = Path(__file__).parent / "intake/performance/complete.json"
 +    data = json.loads(fixture.read_text())
 +    values = {**data["fields"]["values"], **data["acceptance"]["values"]}
@@ -101,31 +135,3 @@
 +    fixture = Path(__file__).parent / "intake/performance/complete.json"
 +    data = json.loads(fixture.read_text())
 +    spec = task_intake.load_spec("task-performance")
-+    record = intake.new_record("task-performance", record_id="fixture-user")
-+    record = intake.set_fields(record, spec, data["fields"]["values"], source="prompt")
-+    record = intake.set_fields(record, spec, {**data["acceptance"]["values"],
-+                               intake.REFERENCE: data["fields"]["values"][intake.REFERENCE]},
-+                               source="issue")
-+    task_intake.write_record(path, record)
-+    return [*arguments, "--intake", str(path), "--prepare-intake"]
-diff --git a/tests/fixtures/intake/performance/complete.json b/tests/fixtures/intake/performance/complete.json
-new file mode 100644
-index 000000000..648c109dc
---- /dev/null
-+++ b/tests/fixtures/intake/performance/complete.json
-@@ -0,0 +1,45 @@
-+{
-+  "task": "task-performance",
-+  "description": "All field decisions are supplied. A separate reply must approve the task brief.",
-+  "fields": {
-+    "source": "prompt",
-+    "values": {
-+      "optimization.objective": "reduce p95 TTFT for the fixed decode workload",
-+      "optimization.repository": ".",
-+      "acceptance.reference": "plan/acceptance.md",
-+      "optimization.model": "<MODEL>",
-+      "optimization.model_revision": "<MODEL_REVISION>",
-+      "optimization.framework": "vllm",
-+      "optimization.workload": "fixed-prompts-v1, concurrency 8",
-+      "optimization.plane": "harness",
-+      "environment.backend": "cuda",
