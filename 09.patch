@@ -1,0 +1,147 @@
++        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
++            raise IntakeError("invalid_value", f"{field['path']} must be a finite number")
++        try:
++            number = float(value)
++        except (OverflowError, ValueError) as exc:
++            raise IntakeError("invalid_value", f"{field['path']} must be a finite number") from exc
++        if not math.isfinite(number):
++            raise IntakeError("invalid_value", f"{field['path']} must be a finite number")
++        return number
++    if kind == "integer":
++        if type(value) is int:
++            return value
++        if isinstance(value, str):
++            try:
++                return int(value)
++            except ValueError:
++                pass
++        raise IntakeError("invalid_value", f"{field['path']} must be an integer")
++    if kind == "choice":
++        allowed = [option["value"] for option in field.get("options", [])]
++        if value not in allowed:
++            raise IntakeError(
++                "invalid_value", f"{field['path']} must be one of {', '.join(allowed)}")
++        return value
++    if not isinstance(value, str) or not value.strip():
++        raise IntakeError("invalid_value", f"{field['path']} must be a non-empty string")
++    return value
++
++
++def _coerce(field: dict, value: object) -> object:
++    typed = _typed_value(field, value)
++    if field["maps_to"] == "task-input/v1" and field.get("type") in ("integer", "number"):
++        mapped = task_input.BY_PATH[field["path"]]
++        problem = task_input.field_value_problem(mapped, typed)
++        if problem:
++            raise IntakeError("invalid_value", f"{mapped.path} {problem}")
++    return typed
++
++
++def _user_source(path: str, source: str) -> bool:
++    return source in ("prompt", "grilling_brief") or source == f"answer:{_QUESTION}{path}"
++
++
++def selected_reference(record: dict) -> str | None:
++    entry = _entry(record, REFERENCE)
++    if entry["status"] == "confirmed" and _user_source(REFERENCE, entry.get("source", "")):
++        return entry["value"]
++    return None
++
++
++def _status_for(field: dict, source: str, *, bound: bool = False) -> str:
++    path = field["path"]
++    from_user = _user_source(path, source)
++    if path == REFERENCE:
++        return "confirmed" if from_user else "assumed"
++    if path.startswith(ACCEPTANCE):
++        if bound:
++            return "confirmed"
++        return "proposed" if from_user else "assumed"
++    if field.get("user_choice") and not from_user:
++        return "assumed"
++    return "confirmed"
++
++
++def _bound_value(record: dict, path: str, entry: dict) -> bool:
++    reference = selected_reference(record)
++    if not reference or entry.get("authority_reference") != reference:
++        return False
++    snapshot = record.get("selected_gate")
++    if isinstance(snapshot, dict) and snapshot.get("reference") == reference:
++        return (entry["source"] == "frozen_gate"
++                and snapshot["values"].get(path) == entry.get("value"))
++    return entry["source"] == "issue"
++
++
++def reconcile_record(record: dict, spec: dict) -> dict:
++    """Recheck provenance, including older records that trusted the source label alone."""
++    _check(record, spec)
++    updated = copy.deepcopy(record)
++    fields = _field_paths(spec)
++    reopened = False
++    for path, entry in updated["fields"].items():
++        if entry["status"] in ("confirmed", "proposed", "assumed"):
++            field = fields[path]
++            if field.get("type") in ("integer", "number"):
++                try:
++                    _coerce(field, entry.get("value"))
++                except IntakeError:
++                    # Older intakes accepted out-of-range execution values. Keep their
++                    # provenance and reissue the field question before another brief.
++                    updated["fields"][path] = {"value": None, "status": "unknown",
++                                               "source": entry["source"],
++                                               "rejected_value": entry.get("value")}
++                    reopened = True
++                    continue
++            bound = _bound_value(record, path, entry)
++            entry["status"] = _status_for(field, entry["source"], bound=bound)
++    if reopened:
++        _bump(updated, updated["revision"] + 1)
++    return updated
++
++
++def _bump(record: dict, next_revision: int) -> None:
++    record.pop("brief_decision", None)
++    record["revision"] = next_revision
++
++
++def _rank(status: str) -> int:
++    return {"confirmed": 2, "proposed": 1}.get(status, 0)
++
++
++def set_fields(record: dict, spec: dict, values: dict, *, source: str) -> dict:
++    """Merge stated values into a copy of ``record``; raise on invalid fields/values."""
++    if source.startswith("answer:"):
++        raise IntakeError("invalid_source", "Use intake answer to record a user reply")
++    if not isinstance(values, dict):
++        raise IntakeError("invalid_record", "values must be a mapping")
++    updated = reconcile_record(record, spec)
++    fields = _field_paths(spec)
++    reference = selected_reference(updated)
++    changed = False
++    revision = updated["revision"]
++    for path, raw in values.items():
++        if path not in fields:
++            raise IntakeError("invalid_field", f"{path} is not a field of {spec['task']}")
++        value = _coerce(fields[path], raw)
++        entry = {"value": value, "source": source}
++        if path.startswith(ACCEPTANCE) and path != REFERENCE and source in AUTHORITATIVE:
++            entry["authority_reference"] = (values.get(REFERENCE) if source == "issue"
++                                            else reference)
++        bound = _bound_value(updated, path, entry)
++        if not bound:
++            entry.pop("authority_reference", None)
++        status = _status_for(fields[path], source, bound=bound)
++        entry["status"] = status
++        current = updated["fields"].get(path)
++        if (current and current["status"] == "unknown" and current.get("asked")
++                and status == "assumed"):
++            continue
++        if current is not None and not current.get("candidates") and (
++            current.get("value") == value
++        ):
++            if _rank(status) <= _rank(current.get("status", "unknown")):
++                continue  # same value, no stronger source: leave the record unchanged
++            updated["fields"][path] = entry
++            changed = True
++            continue

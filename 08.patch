@@ -1,0 +1,144 @@
++        if field.get("maps_to") not in MAP_TARGETS:
++            bad(f"{where}.maps_to", f"must be one of {', '.join(MAP_TARGETS)}")
++        if (field.get("maps_to") == "task-input/v1" and field.get("type") in ("integer", "number")
++                and isinstance(path, str) and path not in task_input.BY_PATH):
++            bad(f"{where}.path", f"{path} is not a task-input/v1 field")
++        if not isinstance(field.get("question"), str) or not field["question"].strip():
++            bad(f"{where}.question", "must be a non-empty string")
++        batch = field.get("batch", 1)
++        if type(batch) is not int or batch < 1:
++            bad(f"{where}.batch", "must be a positive integer")
++        required = field.get("required_before", [])
++        if not isinstance(required, list) or any(
++            stage not in BLOCKING_STAGES for stage in required
++        ):
++            bad(f"{where}.required_before",
++                f"must list stages from {', '.join(BLOCKING_STAGES)}")
++        depends = field.get("depends_on", [])
++        if not isinstance(depends, list) or any(not isinstance(dep, str) for dep in depends):
++            bad(f"{where}.depends_on", "must be an array of field paths")
++        options = field.get("options", [])
++        if not isinstance(options, list) or any(
++            not isinstance(option, dict) or "value" not in option for option in options
++        ):
++            bad(f"{where}.options", "must be an array of {value, hint} objects")
++        if "user_choice" in field and type(field["user_choice"]) is not bool:
++            bad(f"{where}.user_choice", "must be a boolean")
++        when = field.get("required_when")
++        if when is not None and (
++            not isinstance(when, dict) or not isinstance(when.get("field"), str)
++            or "equals" not in when
++        ):
++            bad(f"{where}.required_when", "must be {field, equals}")
++    for field in fields:
++        if not isinstance(field, dict):
++            continue
++        when = field.get("required_when")
++        if isinstance(when, dict) and when.get("field") not in seen:
++            bad(f"{field.get('path', '?')}.required_when",
++                f"names unknown field {when.get('field')}")
++        for dep in field.get("depends_on", []) if isinstance(field.get("depends_on"), list) else ():
++            if dep not in seen:
++                bad(f"{field.get('path', '?')}.depends_on", f"names unknown field {dep}")
++    return problems
++
++
++def load_spec(spec: object) -> dict:
++    """Validate and return the spec; raise ``IntakeError('invalid_spec')``."""
++    problems = validate_spec(spec)
++    if problems:
++        first = problems[0]
++        raise IntakeError("invalid_spec", f"{first['field']}: {first['message']}")
++    return spec
++
++
++def new_record(task: str, *, record_id: str, primary_source: str = "prompt") -> dict:
++    """An empty intake record for ``task`` with a confirmed primary task."""
++    return {
++        "schema_version": SCHEMA_VERSION,
++        "record_id": record_id,
++        "revision": 1,
++        "task": task,
++        "primary_task": {"value": task, "source": primary_source, "status": "confirmed"},
++        "phase": "intake",
++        "fields": {},
++        "open_questions": [],
++        "blockers": [],
++        "conflicts": [],
++        "allowed_next": ["read_only_preparation"],
++        "execution": "not started",
++    }
++
++
++def validate_record(record: object, spec: dict) -> list[dict]:
++    """Return field-level problems in a record against its spec."""
++    problems: list[dict] = []
++
++    def bad(field: str, message: str) -> None:
++        problems.append({"field": field, "message": message})
++
++    if not isinstance(record, dict):
++        return [{"field": "$", "message": "must be an object"}]
++    if record.get("schema_version") != SCHEMA_VERSION:
++        bad("schema_version", f"must be {SCHEMA_VERSION}")
++    if record.get("task") != spec["task"]:
++        bad("task", f"must equal the spec task {spec['task']}")
++    revision = record.get("revision")
++    if type(revision) is not int or revision < 1:
++        bad("revision", "must be a positive integer")
++    primary = record.get("primary_task")
++    if not isinstance(primary, dict) or primary.get("status") not in STATUSES:
++        bad("primary_task", "must carry a value, source and known status")
++    elif primary.get("value") != record.get("task"):
++        bad("primary_task.value", f"must be {record.get('task')}")
++    fields = record.get("fields")
++    if not isinstance(fields, dict):
++        bad("fields", "must be an object")
++        return problems
++    snapshot = record.get("selected_gate")
++    if snapshot is not None and not (
++        isinstance(snapshot, dict) and isinstance(snapshot.get("reference"), str)
++        and isinstance(snapshot.get("values"), dict)
++    ):
++        bad("selected_gate", "must contain the selected reference and its acceptance values")
++    known = _field_paths(spec)
++    for path, entry in fields.items():
++        if path not in known:
++            bad(path, "is not a field of this task spec")
++            continue
++        if not isinstance(entry, dict):
++            bad(path, "must be an object")
++            continue
++        if entry.get("status") not in STATUSES:
++            bad(path, f"status must be one of {', '.join(STATUSES)}")
++        if not isinstance(entry.get("source"), str):
++            bad(path, "source must be a string")
++        if entry.get("status") in SETTLED:
++            try:
++                _typed_value(known[path], entry.get("value"))
++            except IntakeError as exc:
++                bad(path, str(exc))
++        if type(entry.get("asked", False)) is not bool:
++            bad(path, "asked must be a boolean")
++    return problems
++
++
++def _check(record: dict, spec: dict) -> None:
++    problems = validate_record(record, spec)
++    if problems:
++        first = problems[0]
++        raise IntakeError("invalid_record", f"{first['field']}: {first['message']}")
++
++
++def _entry(record: dict, path: str) -> dict:
++    return record["fields"].get(path) or {"value": None, "source": "unknown",
++                                          "status": "unknown", "asked": False}
++
++
++def _settled(record: dict, path: str) -> bool:
++    return _entry(record, path).get("status") in SETTLED
++
++
++def _typed_value(field: dict, value: object) -> object:
++    kind = field.get("type", "text")
++    if kind == "number":

@@ -1,0 +1,135 @@
++        if (current is not None and current.get("status") == "conflicting"
++                and isinstance(current.get("candidates"), list)):
++            # Only an explicit answer settles an open choice. Repeated imports
++            # can supply another option but cannot reselect one on the user's behalf.
++            if all(item["value"] != value for item in current["candidates"]):
++                current["candidates"].append({"value": value, "source": source})
++                changed = True
++            continue
++        if (current is not None and current.get("status") not in (None, "unknown")
++                and current.get("value") is not None and current.get("value") != value):
++            disagrees_with_answer = bound and current.get("source") == f"answer:{_QUESTION}{path}"
++            if _rank(status) > _rank(current["status"]) and not disagrees_with_answer:
++                updated["fields"][path] = entry
++                changed = True
++            elif _rank(status) < _rank(current["status"]):
++                continue  # the accepted value wins over a later proposal
++            else:
++                updated["fields"][path] = {"value": None, "source": source,
++                                           "status": "conflicting",
++                                           "candidates": [
++                                               {"value": current["value"],
++                                                "source": current.get("source", "unknown")},
++                                               {"value": value, "source": source},
++                                           ]}
++                changed = True
++            continue
++        if current is not None and current.get("asked") and status != "assumed":
++            entry["asked"] = True
++        updated["fields"][path] = entry
++        changed = True
++    if changed:
++        _bump(updated, revision + 1)
++    return updated
++
++
++def set_primary_task(record: dict, spec: dict, *, value: str, source: str) -> dict:
++    """Change the selected primary task; open questions become stale by snapshot."""
++    _check(record, spec)
++    if value != record["task"]:
++        raise IntakeError(
++            "invalid_primary_task",
++            f"record task is {record['task']}; a different primary task needs its own record",
++        )
++    updated = copy.deepcopy(record)
++    if updated["primary_task"].get("source") != source:
++        updated["primary_task"] = {"value": value, "source": source, "status": "confirmed"}
++        _bump(updated, updated["revision"] + 1)
++    return updated
++
++
++def _applicable(record: dict, field: dict) -> bool:
++    for dep in field.get("depends_on", []):
++        if not _settled(record, dep):
++            return False
++    when = field.get("required_when")
++    if isinstance(when, dict):
++        entry = _entry(record, when["field"])
++        if entry.get("value") != when.get("equals"):
++            return False
++    return True
++
++
++def _question(record: dict, spec: dict, field: dict) -> dict:
++    snapshot = {"__primary_task__": record["primary_task"]["value"]}
++    dependencies = list(field.get("depends_on", []))
++    when = field.get("required_when")
++    if isinstance(when, dict):
++        dependencies.append(when["field"])
++    for dep in dependencies:
++        snapshot[dep] = _entry(record, dep).get("value")
++    options = field.get("options", [])
++    entry = _entry(record, field["path"])
++    if entry["status"] == "assumed":
++        suggestion = {"value": entry["value"], "hint": f"suggested by {entry['source']}"}
++        options = [suggestion, *(item for item in options if item["value"] != entry["value"])]
++        snapshot["__suggestion__"] = entry["value"]
++    if entry.get("status") == "conflicting" and isinstance(entry.get("candidates"), list):
++        options = [{"value": item["value"], "hint": f"from {item['source']}"}
++                   for item in entry["candidates"]]
++    return {
++        "id": _QUESTION + field["path"],
++        "field": field["path"],
++        "batch": field.get("batch", 1),
++        "question": field["question"],
++        "options": options,
++        "fallback": "unknown",
++        "depends_on": snapshot,
++    }
++
++
++def _frozen_conflicts(record: dict, spec: dict, frozen: dict | None) -> list[dict]:
++    if not frozen:
++        return []
++    conflicts = []
++    for field in spec["fields"]:
++        path = field["path"]
++        if not path.startswith(ACCEPTANCE) or path not in frozen:
++            continue
++        entry = _entry(record, path)
++        if entry.get("value") is None:
++            continue
++        if _canonical(entry["value"]) != _canonical(frozen[path]):
++            conflicts.append({
++                "field": path,
++                "message": "record value disagrees with the frozen gate record",
++                "record_value": entry["value"],
++                "frozen_value": frozen[path],
++            })
++    return conflicts
++
++
++def _performance_brief(record: dict, spec: dict) -> dict:
++    values = {field["path"]: _coerce(field, record["fields"][field["path"]]["value"])
++              for field in spec["fields"] if _applicable(record, field)}
++    metric = values["acceptance.metric_key"]
++    target = str(values["protocol.target_value"]).removesuffix(".0")
++    if values["protocol.target_kind"] == "relative_improvement_pct":
++        performance = f"{metric}: improve by at least {target}% over the pinned baseline"
++    else:
++        comparison = "<=" if values["acceptance.direction"] == "minimize" else ">="
++        performance = f"{metric} {comparison} {target} {values['acceptance.metric_unit']}"
++    operators = {"at_least": ">=", "at_most": "<=", "equal": "="}
++    operator = operators[values["protocol.quality_comparator"]]
++    limit = str(values["protocol.quality_limit"]).removesuffix(".0")
++    quality = (f"{values['protocol.quality_metric']} {operator} "
++               f"{limit} {values['protocol.quality_unit']}")
++    brief = {"record_id": record["record_id"], "revision": record["revision"],
++             "task": record["task"], "performance_target": performance, "quality_gate": quality,
++             "benchmark": values["protocol.quality_benchmark"], "conditions": values}
++    if "campaign_launch" in record:
++        brief["campaign_launch"] = record["campaign_launch"]
++    brief["id"] = _BRIEF_QUESTION + hashlib.sha256(_canonical(brief).encode()).hexdigest()
++    return brief
++
++

@@ -1,0 +1,99 @@
++      "acceptance.direction": "minimize",
++      "acceptance.min_improvement_pct": 10,
++      "acceptance.baseline_revision": "<baseline_sha>"
++    }
++  }
++}
+diff --git a/tests/fixtures/intake/performance/frozen-gate.yaml b/tests/fixtures/intake/performance/frozen-gate.yaml
+new file mode 100644
+index 000000000..ab8583562
+--- /dev/null
++++ b/tests/fixtures/intake/performance/frozen-gate.yaml
+@@ -0,0 +1,8 @@
++schema_version: 1
++acceptance:
++  metric_key: p95_ttft
++  metric_unit: ms
++  direction: minimize
++  min_improvement_pct: 10
++  reference: plan/acceptance.md
++  baseline_revision: "<baseline_sha>"
+diff --git a/tests/fixtures/intake/performance/frozen-mismatch.yaml b/tests/fixtures/intake/performance/frozen-mismatch.yaml
+new file mode 100644
+index 000000000..eb2cd9140
+--- /dev/null
++++ b/tests/fixtures/intake/performance/frozen-mismatch.yaml
+@@ -0,0 +1,8 @@
++schema_version: 1
++acceptance:
++  metric_key: p99_ttft
++  metric_unit: ms
++  direction: minimize
++  min_improvement_pct: 10
++  reference: plan/acceptance.md
++  baseline_revision: "<baseline_sha>"
+diff --git a/tests/fixtures/intake/performance/partial.json b/tests/fixtures/intake/performance/partial.json
+new file mode 100644
+index 000000000..c45db1c25
+--- /dev/null
++++ b/tests/fixtures/intake/performance/partial.json
+@@ -0,0 +1,15 @@
++{
++  "task": "task-performance",
++  "description": "A partial task-performance intake record: only the goal and timing boundary are stated, so evaluate asks the remaining first-batch questions only.",
++  "fields": {
++    "source": "prompt",
++    "values": {
++      "optimization.objective": "make the existing service faster without losing quality",
++      "protocol.timing_boundary": "server-side, includes queueing but not client transfer"
++    }
++  },
++  "acceptance": {
++    "source": "issue",
++    "values": {}
++  }
++}
+diff --git a/tests/fixtures/service_reuse.py b/tests/fixtures/service_reuse.py
+index ae97d07ad..c2ea5b910 100644
+--- a/tests/fixtures/service_reuse.py
++++ b/tests/fixtures/service_reuse.py
+@@ -13,6 +13,7 @@
+ from inferrsi.harness import artifact_primitives
+ from inferrsi.harness.records import evidence, knowledge_capture
+ from inferrsi.knowledge import knowledge_operations
++from tests.fixtures.campaign_intake import approved_start, preparation_arguments
+ from tests.fixtures.diagnosis import diagnosis_args
+ 
+ 
+@@ -175,7 +176,7 @@ def campaign(tmp_path, capsys):
+ 
+ def call(campaign, action, *extra, expected=0):
+     args = (
+-        campaign["start"]
++        approved_start(campaign["start"])
+         if action == "start"
+         else ["campaign", action, "--session", str(campaign["root"]), *map(str, extra)]
+     )
+@@ -208,5 +209,7 @@ def submit(campaign, *, expected=0, retry=None, **changes):
+ 
+ def rejected(arguments):
+     with pytest.raises(SystemExit) as raised:
++        if arguments[:2] == ["campaign", "start"]:
++            arguments = preparation_arguments(arguments)
+         main(arguments)
+     return raised.value.code
+diff --git a/tests/repository/check_installed.py b/tests/repository/check_installed.py
+index 99c3055d9..2ec27c105 100644
+--- a/tests/repository/check_installed.py
++++ b/tests/repository/check_installed.py
+@@ -609,7 +609,9 @@ def _inventory(root, prefix):
+     **_inventory(files("inferrsi").joinpath("knowledge", "data"), "knowledge/data"),
+     **_inventory(files("inferrsi").joinpath("harness", "data"), "harness/data"),
+ }
+-assert len(inventory) == 775, f"installed resource count is {len(inventory)}, expected 775"
++assert len(inventory) == 777, f"installed resource count is {len(inventory)}, expected 777"
++for task in ("task-day-0", "task-performance"):
++    assert f"knowledge/data/skill_library/tasks/{task}/intake.json" in inventory
+ for name in inventory:
+     if "/skill_library/" in name and name.endswith("/SKILL.md"):
+         assert name.removesuffix("SKILL.md") + "metadata.json" not in inventory, name

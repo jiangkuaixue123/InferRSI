@@ -1,0 +1,129 @@
+-inferrsi campaign start --evaluation-mode service_reuse --evaluation-config <protocol.json> ...
++inferrsi campaign start --intake <approved-record.json> --evaluation-mode service_reuse --evaluation-config <protocol.json> ...
+ inferrsi campaign baseline --session <campaign>
+ inferrsi campaign diagnose --session <campaign> --bottleneck <description> --evidence <summary.txt>
+ inferrsi campaign knowledge --session <campaign> --query <cue> --context-bytes <bytes>
+@@ -271,6 +273,7 @@ version shown in `recorded_runtime_version`.
+ 
+ ## Records, compatibility and validation
+ 
++The separate intake receipt in `plan/` identifies the approved brief.
+ Plan schema 3/state schema 2 are specific to service reuse. Missing mode means
+ legacy AB/BA; old plans are not converted. Legacy sessions still require their recorded runtime for resume. This mode stores commit records,
+ configuration values, ownership/run IDs and raw evidence without calculating,
+diff --git a/docs/guides/task-input.md b/docs/guides/task-input.md
+index a98469097..24c7e3cfb 100644
+--- a/docs/guides/task-input.md
++++ b/docs/guides/task-input.md
+@@ -10,6 +10,9 @@ without side effects. `inferrsi plan --task` and `inferrsi run --task` use a com
+ file with the existing plan and run operations (see
+ [use with plan and run](#use-with-plan-and-run)).
+ 
++Intake confirmation records (`inferrsi task intake ...`) are a separate contract
++used before a task file is complete; see [task intake](task-intake.md).
++
+ | Resource | Location | Print from an installed CLI |
+ | --- | --- | --- |
+ | JSON Schema (draft 2020-12) | `src/inferrsi/apps/cli/task-input/v1/schema.json` in the wheel | `inferrsi task schema` |
+diff --git a/docs/guides/task-intake.md b/docs/guides/task-intake.md
+new file mode 100644
+index 000000000..e3e28471e
+--- /dev/null
++++ b/docs/guides/task-intake.md
+@@ -0,0 +1,217 @@
++# Task intake records (intake/v1)
++
++`intake/v1` is the confirmation record an Agent fills before a measured task.
++A native question card, a numbered text fallback and an optional check-in
++interview all write the same record; the record decides which fields still
++block the next stage. It sits next to, not inside, the shared YAML task file
++(`task-input/v1`, [task input](task-input.md)): the record states where each
++value came from, and only fields mapped to `task-input/v1` are expected to
++reach a task file.
++
++The contract is `inferrsi.apps.cli.intake_contract`; the commands are
++`inferrsi task intake ...`. Nothing here starts a process, probes a device or
++freezes a gate. `evaluate` and `answer` update the named record under a sibling `.lock` file.
++If an update is in progress, retry after it finishes.
++
++## Files
++
++| File | Owner |
++| --- | --- |
++| `src/inferrsi/apps/cli/intake_contract.py` | Record validation, question selection, answers, summary; pure functions |
++| `skill_library/tasks/task-performance/intake.json` | Field spec for a performance round |
++| `skill_library/tasks/task-day-0/intake.json` | Day-zero fields; none map to `task-input/v1` |
++| `src/inferrsi/apps/cli/task_intake.py` | Record file I/O and the commands |
++| `tests/fixtures/intake/` | Complete, partial and frozen-gate fixtures |
++
++## Record
++
++```json
++{
++  "schema_version": 1,
++  "record_id": "intake-...",
++  "revision": 3,
++  "task": "task-performance",
++  "primary_task": {"value": "task-performance", "source": "prompt", "status": "confirmed"},
++  "phase": "intake",
++  "fields": {
++    "acceptance.reference": {"value": "<acceptance-issue>", "source": "prompt", "status": "confirmed"},
++    "acceptance.metric_key": {"value": "p95_ttft", "source": "issue", "status": "confirmed",
++                              "authority_reference": "<acceptance-issue>"},
++    "protocol.comparison": {"value": null, "source": "answer:q:protocol.comparison",
++                            "status": "unknown", "asked": true}
++  },
++  "open_questions": [],
++  "blockers": [],
++  "conflicts": [],
++  "allowed_next": ["read_only_preparation"],
++  "execution": "not started"
++}
++```
++
++- `source` names where a value came from: `prompt`, `answer:<question-id>`,
++  `task_file`, `issue`, `repo_inspection`, `derived`, `default`,
++  `grilling_brief`, `frozen_gate` or `unknown`. The caller declares it; InferRSI
++  records it and does not authenticate it.
++- `status` is one of `confirmed`, `proposed`, `assumed`, `unknown`,
++  `conflicting`, `stale`, `superseded`.
++- `allowed_next` is derived by `evaluate`; a caller never fills it by hand.
++  `service_execution` and `device_execution` never appear there: they need a
++  separate authorization.
++
++## Field specs
++
++Each primary task owns an `intake.json` next to its `SKILL.md`. A field declares:
++
++| Key | Meaning |
++| --- | --- |
++| `path` | Field path; `acceptance.*` paths carry the gate boundary |
++| `maps_to` | `task-input/v1`, `campaign-protocol`, `session-protocol`, `summary-only` or `day0-spec` |
++| `batch` | Question batch (1 = goal and gates, 2 = environment identity, 3 = protocol, scope and budget) |
++| `type` | `text`, `number`, `integer` or `choice` |
++| `question`, `options` | Card text and options; `{value, hint}` objects |
++| `depends_on` | Fields that must be settled before this question applies |
++| `required_when` | Conditional applicability, e.g. service reuse fields |
++| `required_before` | Stages this field blocks while it is not settled |
++| `user_choice` | Repository-derived values for this decision become suggestions for the user |
++
++`task-day-0` fields map to `day0-spec` and stay in the record and the summary.
++They do not enter a `task-input/v1` file, which rejects unknown keys.
++
++## Commands
++
++```text
++inferrsi task intake evaluate --task task-performance --record <record.json> \
++    --set optimization.objective="reduce p95 TTFT" --source prompt [--json]
++inferrsi task intake answer --record <record.json> --question <id> --value <value> [--json]
++inferrsi task intake answer --record <record.json> --question <id> --unknown [--json]
++inferrsi task intake summary --record <record.json> [--json]
++```
++
++`evaluate` creates the record when it does not exist, merges `--set` values,
++writes the record back and prints the questions that unblock the next stage.
++`answer` applies one recorded question, bumps the revision and re-evaluates.
++`summary` reads without writing.
++
++Every command accepts `--frozen <gate.yaml>`: a schema-v1 task file whose
++`acceptance` section is compared with the record, except `acceptance.reference`,

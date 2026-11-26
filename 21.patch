@@ -1,0 +1,143 @@
++        main(preparation_arguments(start_arguments(project, extra=("--include", "../protocol"))))
+     assert not project[3].exists()
+ 
+ 
+diff --git a/tests/apps/test_project_service_reuse.py b/tests/apps/test_project_service_reuse.py
+index 1c99f94fe..eae4c2096 100644
+--- a/tests/apps/test_project_service_reuse.py
++++ b/tests/apps/test_project_service_reuse.py
+@@ -14,6 +14,7 @@
+ from inferrsi.apps.cli.arguments import parser
+ from inferrsi.apps.delivery import project, read_bundle
+ from inferrsi.harness import optimization, project_service
++from tests.fixtures.campaign_intake import preparation_arguments
+ from tests.fixtures.service_reuse import begin, call, commit, diagnose, rejected, settings, submit
+ from tests.fixtures.service_reuse import campaign as campaign
+ from tests.fixtures.service_reuse import no_fingerprints as no_fingerprints
+@@ -1500,7 +1501,7 @@ def test_standalone_capture_leaves_search_budget_and_reserve_intact(campaign, mo
+ def test_paired_and_explanation_switches_are_refused_in_service_mode(campaign, switch):
+     # Both switches read AB/BA pairs and profiles; service reuse must not silently drop them.
+     with pytest.raises(SystemExit):
+-        main([*campaign["start"], *switch])
++        main(preparation_arguments([*campaign["start"], *switch]))
+     campaign["capsys"].readouterr()
+     assert not (campaign["root"] / "plan.json").exists()
+ 
+@@ -1518,3 +1519,27 @@ def test_mechanism_declaration_is_refused_in_service_mode(campaign, tmp_path):
+     campaign["capsys"].readouterr()
+     state = json.loads((campaign["root"] / "state.json").read_text())
+     assert state["pending"] is None and not state.get("attempts", [])[1:]
++
++
++def test_service_start_compares_approved_gates_and_full_configuration(campaign):
++    from tests.fixtures.campaign_intake import approved_start
++
++    args = approved_start(campaign["start"])
++    original = json.loads(campaign["config"].read_bytes())
++    changed = settings()
++    changed["quality"]["threshold"] = 0
++    campaign["config"].write_text(json.dumps(changed))
++    assert main(args) == 2
++    blocked = json.loads(campaign["capsys"].readouterr().out)
++    assert blocked["reason"] == "launch_conflict"
++    assert blocked["conflicts"][0]["field"] == "protocol.quality_limit"
++    changed = settings()
++    changed["sampling"]["final"]["warmups"] += 1
++    campaign["config"].write_text(json.dumps(changed))
++    assert main(args) == 2
++    assert json.loads(campaign["capsys"].readouterr().out)["reason"] == "launch_changed"
++    assert not campaign["root"].exists()
++    campaign["config"].write_text(json.dumps(original))
++    assert main(args) == 0
++    plan = project_service.read(campaign["root"] / "plan.json")
++    assert (campaign["root"] / plan["intake_receipt"]).is_file()
+diff --git a/tests/apps/test_task_intake.py b/tests/apps/test_task_intake.py
+new file mode 100644
+index 000000000..6b8d45924
+--- /dev/null
++++ b/tests/apps/test_task_intake.py
+@@ -0,0 +1,790 @@
++"""intake/v1: spec validation, question selection, answers, conflicts and the campaign gate."""
++
++from __future__ import annotations
++
++import hashlib
++import json
++from pathlib import Path
++
++import pytest
++
++from inferrsi.apps import cli
++from inferrsi.apps.cli import intake_contract as intake
++from inferrsi.apps.cli import task_intake
++from tests.apps.test_project_optimization import project, start_arguments  # noqa: F401
++from tests.fixtures.campaign_intake import approved_start
++
++FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "intake"
++PERFORMANCE = FIXTURES / "performance"
++COMPLETE = json.loads((PERFORMANCE / "complete.json").read_text(encoding="utf-8"))
++PARTIAL = json.loads((PERFORMANCE / "partial.json").read_text(encoding="utf-8"))
++ALL_VALUES = {**COMPLETE["fields"]["values"], **COMPLETE["acceptance"]["values"]}
++
++
++def spec_for(task: str = "task-performance") -> dict:
++    return task_intake.load_spec(task)
++
++
++def build(paths: set[str] | None = None, *, task: str = "task-performance") -> dict:
++    """A record built from the complete fixture, optionally restricted to ``paths``."""
++    spec = spec_for(task)
++    record = intake.new_record(task, record_id="intake-test")
++    if task == "task-performance":
++        chosen = {path: value for path, value in ALL_VALUES.items()
++                  if paths is None or path in paths}
++        stated = {path: value for path, value in chosen.items()
++                  if path in COMPLETE["fields"]["values"]}
++        accepted = {path: value for path, value in chosen.items()
++                    if path in COMPLETE["acceptance"]["values"]}
++        if stated:
++            record = intake.set_fields(record, spec, stated, source="prompt")
++        if accepted:
++            accepted[intake.REFERENCE] = ALL_VALUES[intake.REFERENCE]
++            record = intake.set_fields(record, spec, accepted, source="issue")
++    return record
++
++
++def ask(record: dict, spec: dict, frozen: dict | None = None) -> tuple[dict, dict]:
++    """Evaluate and persist the open questions, as the CLI does."""
++    view = intake.evaluate(record, spec, frozen=frozen)
++    record = json.loads(json.dumps(record))
++    record["open_questions"] = view["questions"]
++    return record, view
++
++
++def batch_paths(spec: dict, batch: int) -> set[str]:
++    return {field["path"] for field in spec["fields"] if field.get("batch", 1) == batch}
++
++
++def test_packaged_specs_validate_and_declare_their_targets():
++    for task in ("task-performance", "task-day-0"):
++        spec = spec_for(task)
++        assert spec["task"] == task
++        assert intake.validate_spec(spec) == []
++        assert all(field["maps_to"] in intake.MAP_TARGETS for field in spec["fields"])
++
++
++def test_day0_fields_stay_out_of_task_input_v1():
++    spec = spec_for("task-day-0")
++    assert all(field["maps_to"] == "day0-spec" for field in spec["fields"])
++
++
++def approved_record():
++    record, view = ask(build(), spec_for())
++    return intake.answer(record, spec_for(), question_id=view["task_brief"]["id"], value="approve")
++
++
++def test_complete_fields_require_separate_review_before_search():
++    spec = spec_for()
++    record, view = ask(build(), spec)
++    assert view["brief_review"] == "awaiting_confirmation"
++    brief = view["task_brief"]
++    assert brief["performance_target"] == "p95_ttft <= 180 ms"
++    assert brief["quality_gate"] == "token mismatches <= 0 tokens"
++    assert brief["benchmark"] == ALL_VALUES["protocol.quality_benchmark"]

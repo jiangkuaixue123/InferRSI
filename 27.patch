@@ -1,0 +1,135 @@
++    assert reopened["revision"] > record["revision"]
++    for key in ("environment.repetitions", "environment.max_minutes", "environment.rounds"):
++        assert cli.main(["task", "intake", "answer", "--record", str(path), "--json",
++                         "--question", f"q:{key}", "--value", "1"]) == 0
++        view = json.loads(capsys.readouterr().out)
++    assert view["brief_review"] == "awaiting_confirmation"
++    assert not view["complete"]
++
++
++@pytest.mark.parametrize(("flag", "value", "reason"), [
++    ("--metric-unit", "other", "launch_conflict"),
++    ("--measure-command", "{python} {protocol}/different.py {result}", "launch_conflict"),
++    ("--rounds", "2", "launch_conflict"),
++    ("--quality-key", "different", "launch_changed"),
++    ("--warmups", "7", "launch_changed"),
++])
++def test_changed_launch_never_creates_campaign(project, capsys, flag, value, reason):  # noqa: F811
++    args = approved_start(start_arguments(project))
++    assert cli.main([*args, flag, value]) == 2
++    assert json.loads(capsys.readouterr().out)["reason"] == reason
++    assert not project[3].exists()
++
++
++def test_preparation_invalidates_only_changed_brief(project, capsys):  # noqa: F811
++    args = approved_start(start_arguments(project))
++    record = Path(args[-1])
++    approved = json.loads(record.read_bytes())["brief_decision"]
++    assert cli.main([*args, "--prepare-intake"]) == 0
++    unchanged = json.loads(capsys.readouterr().out)
++    assert unchanged["brief_review"] == "approved"
++    assert json.loads(record.read_bytes())["brief_decision"] == approved
++    assert cli.main([*args, "--warmups", "2", "--prepare-intake"]) == 0
++    revised = json.loads(capsys.readouterr().out)
++    assert revised["brief_review"] == "awaiting_confirmation"
++    assert revised["task_brief"]["id"] != unchanged["task_brief"]["id"]
++    assert cli.main([*args, "--warmups", "2"]) == 2
++    assert not project[3].exists()
++
++
++def test_planning_only_and_changed_protocol_are_refused(project, capsys):  # noqa: F811
++    args = start_arguments(project)
++    path = project[3].with_suffix(".intake.json")
++    task_intake.write_record(path, approved_record())
++    assert cli.main([*args, "--intake", str(path)]) == 2
++    assert json.loads(capsys.readouterr().out)["reason"] == "unbound_brief"
++    approved = approved_start(args)
++    script = project[1] / "quality.py"
++    script.write_text(script.read_text() + "\n# Updated validator\n")
++    assert cli.main(approved) == 2
++    assert json.loads(capsys.readouterr().out)["reason"] == "launch_changed"
++    assert not project[3].exists()
++
++
++@pytest.mark.parametrize(("kind", "goal"), [("absolute", 30), ("relative_improvement_pct", 200)])
++def test_independent_final_checks_approved_target(project, capsys, kind, goal):  # noqa: F811
++    from tests.apps.test_project_optimization import submit
++    from tests.fixtures.diagnosis import diagnosis_args
++
++    args = approved_start(start_arguments(project), overrides={
++        "protocol.target_kind": kind, "protocol.target_value": goal})
++    assert cli.main(args) == 0
++    capsys.readouterr()
++    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
++    capsys.readouterr()
++    code, view = submit(project, capsys, 20)
++    assert code == 0 and view["best"]["score"] == 20
++    cli.main(["campaign", "final", "--directory", str(project[3]), "--reason", "retest"])
++    capsys.readouterr()
++    final = json.loads((project[3] / "state.json").read_bytes())["final"]["assessment"]
++    assert (final["verdict"], final["reason"]) == ("FAIL", "final_performance_target_not_met")
++
++
++def test_boolean_quality_success_does_not_override_numeric_limit(project, capsys):  # noqa: F811
++    from tests.apps.test_project_optimization import submit
++    from tests.fixtures.diagnosis import diagnosis_args
++
++    (project[1] / "quality.py").write_text(
++        "import json, sys\nfrom pathlib import Path\n"
++        "value = json.loads((Path(sys.argv[1])/'config.json').read_text())['metric']\n"
++        "Path(sys.argv[2]).write_text(json.dumps({'correct':True,'errors':value-10}))\n")
++    args = approved_start(start_arguments(project), overrides={
++        "protocol.quality_metric": "errors", "protocol.quality_limit": 0,
++        "protocol.quality_comparator": "at_most", "protocol.quality_unit": "tokens"})
++    assert cli.main(args) == 0
++    capsys.readouterr()
++    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
++    capsys.readouterr()
++    _, view = submit(project, capsys, 20)
++    assert view["best"]["kind"] == "baseline"
++    assert view["latest_observation"]["assessment"]["quality_passed"] is False
+diff --git a/tests/fixtures/campaign_intake.py b/tests/fixtures/campaign_intake.py
+new file mode 100644
+index 000000000..8260550e8
+--- /dev/null
++++ b/tests/fixtures/campaign_intake.py
+@@ -0,0 +1,126 @@
++"""Synthetic user approval for integration tests that exercise measured campaigns."""
++
++import io
++import json
++import shlex
++from contextlib import redirect_stdout
++from pathlib import Path
++
++from inferrsi.apps.cli import intake_contract as intake
++from inferrsi.apps.cli import main, task_intake
++from inferrsi.apps.cli.arguments import parser
++from inferrsi.harness import candidates, project_service
++
++
++def approved_start(arguments, *, overrides=None):
++    args = parser().parse_args(arguments)
++    path = args.session.with_suffix(".intake.json")
++    fixture = Path(__file__).parent / "intake/performance/complete.json"
++    data = json.loads(fixture.read_text())
++    values = {**data["fields"]["values"], **data["acceptance"]["values"]}
++    values.update(
++        {
++            "optimization.repository": str(args.repo.resolve()),
++            "environment.rounds": args.rounds,
++            "environment.max_minutes": args.max_minutes,
++            "protocol.comparison": args.evaluation_mode,
++            "protocol.target_kind": "absolute",
++        }
++    )
++    if args.evaluation_mode == "service_reuse":
++        cfg = project_service.read(args.evaluation_config)
++        project_service.validate(cfg)
++        obj = next(o for o in cfg["objectives"] if o["id"] == cfg["ranking"][0])
++        q = cfg["quality"]
++        cmp = "at_least" if q["direction"] == "maximize" else "at_most"
++        relative = q["mode"] == "baseline_comparison"
++        values.update(
++            {
++                "acceptance.baseline_revision": project_service.revision(args.repo, args.include),

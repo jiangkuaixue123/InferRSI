@@ -1,0 +1,130 @@
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "environment.candidate_command",
++      "maps_to": "task-input/v1",
++      "batch": 3,
++      "type": "text",
++      "question": "Which command runs a submitted candidate under the same conditions?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "optimization.plane",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 3,
++      "type": "choice",
++      "question": "Which SIAS plane may this round change?",
++      "options": [
++        {"value": "harness", "hint": "scheduling, batching, serving policy or harness code"},
++        {"value": "model", "hint": "model execution, kernels or precision"},
++        {"value": "infra", "hint": "runtime, drivers or device placement"}
++      ],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "environment.rounds",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 3,
++      "type": "integer",
++      "question": "How many candidate rounds may search run, and how much time is reserved for the final?",
++      "required_before": ["candidate_search"]
++    }
++  ]
++}
+diff --git a/tests/apps/test_engineering_benchmark_plugins.py b/tests/apps/test_engineering_benchmark_plugins.py
+index b1eadd835..bd7db6544 100644
+--- a/tests/apps/test_engineering_benchmark_plugins.py
++++ b/tests/apps/test_engineering_benchmark_plugins.py
+@@ -5,6 +5,7 @@
+ from tests.apps.test_codex_plugin import distribution as distribution
+ from tests.apps.test_codex_plugin import invoke
+ from tests.apps.test_project_optimization import project as project
++from tests.fixtures.campaign_intake import approved_start
+ from tests.fixtures.diagnosis import diagnosis_args
+ 
+ 
+@@ -67,7 +68,7 @@ def test_current_agent_session_uses_bundled_task_and_enforces_rounds(distributio
+ def test_isolated_plugin_runs_project_round_and_retained_final(distribution, tmp_path, project):
+     repo, protocol, instructions, root = project
+     started = invoke(
+-        distribution, tmp_path, "campaign", "start", "--directory", str(root),
++        distribution, tmp_path, *approved_start(["campaign", "start", "--directory", str(root),
+         "--repo", str(repo), "--include", "engine.py", "--include", "config.json",
+         "--protocol", str(protocol), "--instructions", str(instructions),
+         "--measure-command", '"{python}" "{protocol}/measure.py" "{candidate}" "{result}"',
+@@ -76,6 +77,7 @@ def test_isolated_plugin_runs_project_round_and_retained_final(distribution, tmp
+         "--quality-key", "correct", "--scope", "synthetic-software-control",
+         "--min-improvement-pct", "1", "--warmups", "0", "--repetitions", "1",
+         "--rounds", "1", "--max-minutes", "5", "--evaluation-timeout-seconds", "30",
++        "--python", "python3"]),
+     )
+     assert started.returncode == 0, started.stderr
+     diagnosed = invoke(distribution, tmp_path, *diagnosis_args(root, "campaign"))
+diff --git a/tests/apps/test_project_explanation.py b/tests/apps/test_project_explanation.py
+index d3a46329c..a556aaea1 100644
+--- a/tests/apps/test_project_explanation.py
++++ b/tests/apps/test_project_explanation.py
+@@ -11,6 +11,7 @@
+ from inferrsi.apps.views.optimization_chart import render_result
+ from inferrsi.harness.artifact_primitives import digest
+ from inferrsi.harness.optimization import read_records
++from tests.fixtures.campaign_intake import approved_start
+ from tests.fixtures.diagnosis import diagnosis_args
+ 
+ # Device-wide factor applied to every timed value of one measurement call, cycling per
+@@ -56,7 +57,7 @@ def project(tmp_path):
+ 
+ def start(project, capsys, *extra, repetitions=8):
+     repo, protocol, instructions, root = project
+-    code = main([
++    code = main(approved_start([
+         "campaign", "start", "--directory", str(root), "--repo", str(repo),
+         "--include", "engine.py", "--include", "config.json", "--protocol", str(protocol),
+         "--instructions", str(instructions), "--measure-command",
+@@ -67,7 +68,7 @@ def start(project, capsys, *extra, repetitions=8):
+         "--repetitions", str(repetitions), "--warmups", "1", "--min-improvement-pct", "1",
+         "--rounds", "4", "--round-mode", "up_to", "--max-minutes", "5",
+         "--evaluation-timeout-seconds", "20", *extra,
+-    ])
++    ]))
+     if code == 0:  # Rounds require a retained bottleneck diagnosis (#519).
+         assert main(diagnosis_args(root, "campaign")) == 0
+     capsys.readouterr()
+diff --git a/tests/apps/test_project_optimization.py b/tests/apps/test_project_optimization.py
+index f4f2887d9..27defac60 100644
+--- a/tests/apps/test_project_optimization.py
++++ b/tests/apps/test_project_optimization.py
+@@ -12,6 +12,7 @@
+ from inferrsi.apps.views.dashboard import dashboard_snapshot, render_dashboard
+ from inferrsi.harness import optimization_session
+ from inferrsi.harness.optimization import read_records
++from tests.fixtures.campaign_intake import approved_start, preparation_arguments
+ from tests.fixtures.diagnosis import diagnosis_args
+ from tests.fixtures.session_process import kill_controller, target_python
+ 
+@@ -59,7 +60,8 @@ def start_arguments(project, *, direction="maximize", mode="up_to", extra=()):
+ 
+ 
+ def start(project, capsys, *, direction="maximize", mode="up_to", extra=()):
+-    assert main(start_arguments(project, direction=direction, mode=mode, extra=extra)) == 0
++    args = start_arguments(project, direction=direction, mode=mode, extra=extra)
++    assert main(approved_start(args)) == 0
+     result = json.loads(capsys.readouterr().out)
+     assert result["working_candidate"] == str(project[0])
+     assert result["next_action"] == "record_bottleneck_diagnosis"
+@@ -169,7 +171,7 @@ def find_spec(self, fullname, path=None, target=None):
+     ]
+     result = subprocess.run(
+         [sys.executable, "-X", "utf8", "-c", script],
+-        input=json.dumps({"start": start_arguments(project), "commands": commands,
++        input=json.dumps({"start": approved_start(start_arguments(project)), "commands": commands,
+                           "repo": str(repo), "root": str(root)}),
+         capture_output=True, text=True, encoding="utf-8", timeout=60,
+     )
+@@ -427,7 +429,7 @@ def test_project_knowledge_off_and_manual_record_writes_are_rejected(project, ca
+ 
+ def test_declared_paths_cannot_escape_project(project, capsys):
+     with pytest.raises(SystemExit):
+-        start(project, capsys, extra=("--include", "../protocol"))
