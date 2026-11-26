@@ -1,3 +1,82 @@
++"""intake/v1: host-independent task intake records for missing-field confirmation.
++
++A card, a numbered text fallback and an optional check-in interview all write the
++same record. The record separates what the user stated (``confirmed``), what a
++card answer proposes (``proposed``), what stays unknown (``unknown``) and what
++conflicts (``conflicting``). ``evaluate`` selects the questions that unblock the
++next stage, derives ``allowed_next`` and never authenticates acceptance
++thresholds: a proposal kept in a record does not freeze a gate.
++
++The contract performs no I/O. Mapped numeric values use the task-input validator. Callers in
++``inferrsi.apps.cli.task_intake`` load the versioned spec and record, then call these
++pure functions. ``source`` is declared by the caller and is not authenticated.
++"""
++
++from __future__ import annotations
++
++import copy
++import hashlib
++import json
++import math
++
++from . import task_input
++
++SCHEMA_VERSION = 1
++
++STAGES = (
++    "read_only_preparation",
++    "baseline_measurement",
++    "candidate_search",
++    "service_execution",
++    "device_execution",
++)
++BLOCKING_STAGES = STAGES[1:]
++
++MAP_TARGETS = ("task-input/v1", "campaign-protocol", "session-protocol",
++               "summary-only", "day0-spec")
++
++STATUSES = ("confirmed", "proposed", "assumed", "unknown", "conflicting",
++            "stale", "superseded")
++SETTLED = ("confirmed", "proposed")
++BLOCKING = ("unknown", "assumed", "conflicting", "stale", "superseded")
++
++ACCEPTANCE = "acceptance."
++AUTHORITATIVE = ("issue", "frozen_gate")
++REFERENCE = "acceptance.reference"
++
++_QUESTION = "q:"
++_BRIEF_QUESTION = "q:task_brief:"
++
++
++class IntakeError(ValueError):
++    """A record, spec or answer is rejected; ``code`` names the recorded reason."""
++
++    def __init__(self, code: str, message: str):
++        super().__init__(message)
++        self.code = code
++
++
++def _canonical(value: object) -> str:
++    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
++
++
++def _field_paths(spec: dict) -> dict[str, dict]:
++    return {field["path"]: field for field in spec["fields"]}
++
++
++def validate_spec(spec: object) -> list[dict]:
++    """Return field-level problems in a packaged intake spec, in spec order."""
++    problems: list[dict] = []
++
++    def bad(path: str, message: str) -> None:
++        problems.append({"field": path, "message": message})
++
++    if not isinstance(spec, dict):
++        return [{"field": "$", "message": "must be an object"}]
++    if spec.get("schema_version") != SCHEMA_VERSION:
++        bad("schema_version", f"must be {SCHEMA_VERSION}")
++    if not isinstance(spec.get("task"), str) or not spec["task"].strip():
++        bad("task", "must be a non-empty string")
 +    fields = spec.get("fields")
 +    if not isinstance(fields, list) or not fields:
 +        bad("fields", "must be a non-empty array")
@@ -75,68 +154,3 @@
 +        "schema_version": SCHEMA_VERSION,
 +        "record_id": record_id,
 +        "revision": 1,
-+        "task": task,
-+        "primary_task": {"value": task, "source": primary_source, "status": "confirmed"},
-+        "phase": "intake",
-+        "fields": {},
-+        "open_questions": [],
-+        "blockers": [],
-+        "conflicts": [],
-+        "allowed_next": ["read_only_preparation"],
-+        "execution": "not started",
-+    }
-+
-+
-+def validate_record(record: object, spec: dict) -> list[dict]:
-+    """Return field-level problems in a record against its spec."""
-+    problems: list[dict] = []
-+
-+    def bad(field: str, message: str) -> None:
-+        problems.append({"field": field, "message": message})
-+
-+    if not isinstance(record, dict):
-+        return [{"field": "$", "message": "must be an object"}]
-+    if record.get("schema_version") != SCHEMA_VERSION:
-+        bad("schema_version", f"must be {SCHEMA_VERSION}")
-+    if record.get("task") != spec["task"]:
-+        bad("task", f"must equal the spec task {spec['task']}")
-+    revision = record.get("revision")
-+    if type(revision) is not int or revision < 1:
-+        bad("revision", "must be a positive integer")
-+    primary = record.get("primary_task")
-+    if not isinstance(primary, dict) or primary.get("status") not in STATUSES:
-+        bad("primary_task", "must carry a value, source and known status")
-+    elif primary.get("value") != record.get("task"):
-+        bad("primary_task.value", f"must be {record.get('task')}")
-+    fields = record.get("fields")
-+    if not isinstance(fields, dict):
-+        bad("fields", "must be an object")
-+        return problems
-+    snapshot = record.get("selected_gate")
-+    if snapshot is not None and not (
-+        isinstance(snapshot, dict) and isinstance(snapshot.get("reference"), str)
-+        and isinstance(snapshot.get("values"), dict)
-+    ):
-+        bad("selected_gate", "must contain the selected reference and its acceptance values")
-+    known = _field_paths(spec)
-+    for path, entry in fields.items():
-+        if path not in known:
-+            bad(path, "is not a field of this task spec")
-+            continue
-+        if not isinstance(entry, dict):
-+            bad(path, "must be an object")
-+            continue
-+        if entry.get("status") not in STATUSES:
-+            bad(path, f"status must be one of {', '.join(STATUSES)}")
-+        if not isinstance(entry.get("source"), str):
-+            bad(path, "source must be a string")
-+        if entry.get("status") in SETTLED:
-+            try:
-+                _typed_value(known[path], entry.get("value"))
-+            except IntakeError as exc:
-+                bad(path, str(exc))
-+        if type(entry.get("asked", False)) is not bool:
-+            bad(path, "asked must be a boolean")
-+    return problems
-+
-+

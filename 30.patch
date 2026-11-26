@@ -1,161 +1,132 @@
-+                    "--question",
-+                    brief["id"],
-+                    "--value",
-+                    "approve",
-+                    "--json",
-+                ]
-+            )
-+            == 0
-+        )
-+    return invocation
++    ("--measure-command", "{python} {protocol}/different.py {result}", "launch_conflict"),
++    ("--rounds", "2", "launch_conflict"),
++    ("--quality-key", "different", "launch_changed"),
++    ("--quality-benchmark", "wrong-corpus", "launch_conflict"),
++    ("--warmups", "7", "launch_changed"),
++])
++def test_changed_launch_never_creates_campaign(project, capsys, flag, value, reason):  # noqa: F811
++    args = approved_start(start_arguments(project))
++    assert cli.main([*args, flag, value]) == 2
++    assert json.loads(capsys.readouterr().out)["reason"] == reason
++    assert not project[3].exists()
 +
 +
-+def preparation_arguments(arguments):
-+    """Reach Harness validation with a complete planning brief even for invalid flags."""
++def test_preparation_invalidates_only_changed_brief(project, capsys):  # noqa: F811
++    args = approved_start(start_arguments(project))
++    record = Path(args[-1])
++    approved = json.loads(record.read_bytes())["brief_decision"]
++    assert cli.main([*args, "--prepare-intake"]) == 0
++    unchanged = json.loads(capsys.readouterr().out)
++    assert unchanged["brief_review"] == "approved"
++    assert json.loads(record.read_bytes())["brief_decision"] == approved
++    assert cli.main([*args, "--warmups", "2", "--prepare-intake"]) == 0
++    revised = json.loads(capsys.readouterr().out)
++    assert revised["brief_review"] == "awaiting_confirmation"
++    assert revised["task_brief"]["id"] != unchanged["task_brief"]["id"]
++    assert cli.main([*args, "--warmups", "2"]) == 2
++    assert not project[3].exists()
++
++
++def test_planning_only_and_changed_protocol_are_refused(project, capsys):  # noqa: F811
++    args = start_arguments(project)
++    path = project[3].with_suffix(".intake.json")
++    task_intake.write_record(path, approved_record())
++    assert cli.main([*args, "--intake", str(path)]) == 2
++    assert json.loads(capsys.readouterr().out)["reason"] == "unbound_brief"
++    approved = approved_start(args)
++    script = project[1] / "quality.py"
++    script.write_text(script.read_text() + "\n# Updated validator\n")
++    assert cli.main(approved) == 2
++    assert json.loads(capsys.readouterr().out)["reason"] == "launch_changed"
++    assert not project[3].exists()
++
++
++@pytest.mark.parametrize(("kind", "goal"), [("absolute", 30), ("relative_improvement_pct", 200)])
++def test_independent_final_checks_approved_target(project, capsys, kind, goal):  # noqa: F811
++    from tests.apps.test_project_optimization import submit
++    from tests.fixtures.diagnosis import diagnosis_args
++
++    args = approved_start(start_arguments(project), overrides={
++        "protocol.target_kind": kind, "protocol.target_value": goal})
++    assert cli.main(args) == 0
++    capsys.readouterr()
++    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
++    capsys.readouterr()
++    code, view = submit(project, capsys, 20)
++    assert code == 0 and view["best"]["score"] == 20
++    cli.main(["campaign", "final", "--directory", str(project[3]), "--reason", "retest"])
++    capsys.readouterr()
++    final = json.loads((project[3] / "state.json").read_bytes())["final"]["assessment"]
++    assert (final["verdict"], final["reason"]) == ("FAIL", "final_performance_target_not_met")
++
++
++def test_boolean_quality_success_does_not_override_numeric_limit(project, capsys):  # noqa: F811
++    from tests.apps.test_project_optimization import submit
++    from tests.fixtures.diagnosis import diagnosis_args
++
++    (project[1] / "quality.py").write_text(
++        "import json, sys\nfrom pathlib import Path\n"
++        "value = json.loads((Path(sys.argv[1])/'config.json').read_text())['metric']\n"
++        "result = {'correct':True,'errors':value-10,'dataset':'fixture-exact-v1'}\n"
++        "Path(sys.argv[2]).write_text(json.dumps(result))\n")
++    args = approved_start(start_arguments(project), overrides={
++        "protocol.quality_metric": "errors", "protocol.quality_limit": 0,
++        "protocol.quality_comparator": "at_most", "protocol.quality_unit": "tokens"})
++    assert cli.main(args) == 0
++    capsys.readouterr()
++    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
++    capsys.readouterr()
++    _, view = submit(project, capsys, 20)
++    assert view["best"]["kind"] == "baseline"
++    assert view["latest_observation"]["assessment"]["quality_passed"] is False
++
++
++@pytest.mark.parametrize("reported", ["wrong-corpus", None])
++def test_abba_quality_rejects_foreign_or_missing_corpus(project, capsys, reported):  # noqa: F811
++    from tests.apps.test_project_optimization import submit
++    from tests.fixtures.diagnosis import diagnosis_args
++
++    (project[1] / "quality.py").write_text(
++        "import json, sys\nfrom pathlib import Path\n"
++        "result = {'correct':True,'accuracy':100,'dataset':'fixture-exact-v1'}\n"
++        "if Path(sys.argv[1]).name == 'candidate':\n"
++        f"    result['dataset'] = {reported!r}\n"
++        "    if result['dataset'] is None: del result['dataset']\n"
++        "Path(sys.argv[2]).write_text(json.dumps(result))\n")
++    args = approved_start(start_arguments(project), overrides={
++        "protocol.quality_metric": "accuracy", "protocol.quality_limit": 95,
++        "protocol.quality_comparator": "at_least", "protocol.quality_unit": "points"})
++    assert cli.main(args) == 0
++    capsys.readouterr()
++    plan = json.loads((project[3] / "plan.json").read_bytes())
++    assert plan["evaluation_settings"]["quality_benchmark"] == "fixture-exact-v1"
++    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
++    capsys.readouterr()
++    code, result = submit(project, capsys, 20)
++    assessment = result["latest_observation"]["assessment"]
++    assert code == 2 and result["best"]["kind"] == "baseline"
++    assert (assessment["verdict"], assessment["reason"]) == (
++        "INCONCLUSIVE", "quality_benchmark_mismatch")
+diff --git a/tests/fixtures/campaign_intake.py b/tests/fixtures/campaign_intake.py
+new file mode 100644
+index 000000000..d5d0aa01f
+--- /dev/null
++++ b/tests/fixtures/campaign_intake.py
+@@ -0,0 +1,127 @@
++"""Synthetic user approval for integration tests that exercise measured campaigns."""
++
++import io
++import json
++import shlex
++from contextlib import redirect_stdout
++from pathlib import Path
++
++from inferrsi.apps.cli import intake_contract as intake
++from inferrsi.apps.cli import main, task_intake
++from inferrsi.apps.cli.arguments import parser
++from inferrsi.harness import candidates, project_service
++
++
++def approved_start(arguments, *, overrides=None):
 +    args = parser().parse_args(arguments)
 +    path = args.session.with_suffix(".intake.json")
-+    fixture = Path(__file__).parent / "intake/performance/complete.json"
-+    data = json.loads(fixture.read_text())
-+    spec = task_intake.load_spec("task-performance")
-+    record = intake.new_record("task-performance", record_id="fixture-user")
-+    record = intake.set_fields(record, spec, data["fields"]["values"], source="prompt")
-+    record = intake.set_fields(record, spec, {**data["acceptance"]["values"],
-+                               intake.REFERENCE: data["fields"]["values"][intake.REFERENCE]},
-+                               source="issue")
-+    task_intake.write_record(path, record)
-+    return [*arguments, "--intake", str(path), "--prepare-intake"]
-diff --git a/tests/fixtures/intake/performance/complete.json b/tests/fixtures/intake/performance/complete.json
-new file mode 100644
-index 000000000..648c109dc
---- /dev/null
-+++ b/tests/fixtures/intake/performance/complete.json
-@@ -0,0 +1,45 @@
-+{
-+  "task": "task-performance",
-+  "description": "All field decisions are supplied. A separate reply must approve the task brief.",
-+  "fields": {
-+    "source": "prompt",
-+    "values": {
-+      "optimization.objective": "reduce p95 TTFT for the fixed decode workload",
-+      "optimization.repository": ".",
-+      "acceptance.reference": "plan/acceptance.md",
-+      "optimization.model": "<MODEL>",
-+      "optimization.model_revision": "<MODEL_REVISION>",
-+      "optimization.framework": "vllm",
-+      "optimization.workload": "fixed-prompts-v1, concurrency 8",
-+      "optimization.plane": "harness",
-+      "environment.backend": "cuda",
-+      "environment.device_model": "<DEVICE_MODEL>",
-+      "environment.baseline_command": "python bench.py --engine baseline {result}",
-+      "environment.candidate_command": "python bench.py --engine candidate {result}",
-+      "environment.quality_command": "python quality.py {candidate} {result}",
-+      "environment.repetitions": 5,
-+      "environment.max_minutes": 120,
-+      "environment.rounds": 4,
-+      "protocol.timing_boundary": "server-side, includes queueing but not client transfer",
-+      "protocol.comparison": "abba",
-+      "protocol.quality_failure_policy": "revert_candidate",
-+      "protocol.target_kind": "absolute",
-+      "protocol.target_value": 180,
-+      "protocol.quality_benchmark": "fixed-prompts-v1, held-out split",
-+      "protocol.quality_metric": "token mismatches",
-+      "protocol.quality_comparator": "at_most",
-+      "protocol.quality_limit": 0,
-+      "protocol.quality_unit": "tokens"
-+    }
-+  },
-+  "acceptance": {
-+    "source": "issue",
-+    "values": {
-+      "acceptance.metric_key": "p95_ttft",
-+      "acceptance.metric_unit": "ms",
-+      "acceptance.direction": "minimize",
-+      "acceptance.min_improvement_pct": 10,
-+      "acceptance.baseline_revision": "<baseline_sha>"
-+    }
-+  }
-+}
-diff --git a/tests/fixtures/intake/performance/frozen-gate.yaml b/tests/fixtures/intake/performance/frozen-gate.yaml
-new file mode 100644
-index 000000000..ab8583562
---- /dev/null
-+++ b/tests/fixtures/intake/performance/frozen-gate.yaml
-@@ -0,0 +1,8 @@
-+schema_version: 1
-+acceptance:
-+  metric_key: p95_ttft
-+  metric_unit: ms
-+  direction: minimize
-+  min_improvement_pct: 10
-+  reference: plan/acceptance.md
-+  baseline_revision: "<baseline_sha>"
-diff --git a/tests/fixtures/intake/performance/frozen-mismatch.yaml b/tests/fixtures/intake/performance/frozen-mismatch.yaml
-new file mode 100644
-index 000000000..eb2cd9140
---- /dev/null
-+++ b/tests/fixtures/intake/performance/frozen-mismatch.yaml
-@@ -0,0 +1,8 @@
-+schema_version: 1
-+acceptance:
-+  metric_key: p99_ttft
-+  metric_unit: ms
-+  direction: minimize
-+  min_improvement_pct: 10
-+  reference: plan/acceptance.md
-+  baseline_revision: "<baseline_sha>"
-diff --git a/tests/fixtures/intake/performance/partial.json b/tests/fixtures/intake/performance/partial.json
-new file mode 100644
-index 000000000..c45db1c25
---- /dev/null
-+++ b/tests/fixtures/intake/performance/partial.json
-@@ -0,0 +1,15 @@
-+{
-+  "task": "task-performance",
-+  "description": "A partial task-performance intake record: only the goal and timing boundary are stated, so evaluate asks the remaining first-batch questions only.",
-+  "fields": {
-+    "source": "prompt",
-+    "values": {
-+      "optimization.objective": "make the existing service faster without losing quality",
-+      "protocol.timing_boundary": "server-side, includes queueing but not client transfer"
-+    }
-+  },
-+  "acceptance": {
-+    "source": "issue",
-+    "values": {}
-+  }
-+}
-diff --git a/tests/fixtures/service_reuse.py b/tests/fixtures/service_reuse.py
-index ae97d07ad..c2ea5b910 100644
---- a/tests/fixtures/service_reuse.py
-+++ b/tests/fixtures/service_reuse.py
-@@ -13,6 +13,7 @@
- from inferrsi.harness import artifact_primitives
- from inferrsi.harness.records import evidence, knowledge_capture
- from inferrsi.knowledge import knowledge_operations
-+from tests.fixtures.campaign_intake import approved_start, preparation_arguments
- from tests.fixtures.diagnosis import diagnosis_args
- 
- 
-@@ -175,7 +176,7 @@ def campaign(tmp_path, capsys):
- 
- def call(campaign, action, *extra, expected=0):
-     args = (
--        campaign["start"]
-+        approved_start(campaign["start"])
-         if action == "start"
-         else ["campaign", action, "--session", str(campaign["root"]), *map(str, extra)]
-     )
-@@ -208,5 +209,7 @@ def submit(campaign, *, expected=0, retry=None, **changes):
- 
- def rejected(arguments):
-     with pytest.raises(SystemExit) as raised:
-+        if arguments[:2] == ["campaign", "start"]:
-+            arguments = preparation_arguments(arguments)
-         main(arguments)
-     return raised.value.code
-diff --git a/tests/repository/check_installed.py b/tests/repository/check_installed.py
-index 99c3055d9..2ec27c105 100644
---- a/tests/repository/check_installed.py
-+++ b/tests/repository/check_installed.py
-@@ -609,7 +609,9 @@ def _inventory(root, prefix):
-     **_inventory(files("inferrsi").joinpath("knowledge", "data"), "knowledge/data"),

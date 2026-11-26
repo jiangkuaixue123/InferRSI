@@ -1,3 +1,73 @@
++                "environment.repetitions": settings["sampling"]["baseline"]["repetitions"],
++            }
++        )
++        if primary["threshold_type"] == "relative_percent":
++            fields["acceptance.min_improvement_pct"] = primary["gain_threshold"]
++        measure, quality_command = settings["commands"]["measure"], settings["commands"]["quality"]
++    else:
++        baseline = candidates.identity(staged / plan["baseline_path"])
++        launch["baseline_identity"] = baseline
++        fields.update(
++            {
++                "acceptance.baseline_revision": baseline,
++                "acceptance.metric_key": settings["metric_key"],
++                "acceptance.metric_unit": settings["metric_unit"],
++                "acceptance.direction": settings["direction"],
++                "acceptance.min_improvement_pct": settings["min_improvement_pct"],
++                "protocol.quality_benchmark": settings["quality_benchmark"],
++                "protocol.timing_boundary": settings["scope"],
++                "environment.repetitions": settings["repetitions"],
++            }
++        )
++        measure, quality_command = settings["measure_command"], settings["quality_command"]
++    fields.update(
++        {
++            "environment.baseline_command": measure,
++            "environment.candidate_command": measure,
++            "environment.quality_command": quality_command,
++        }
++    )
++    return launch, fields
++
++
++def _conflicts(conditions, expected, args):
++    conflicts = []
++    for key, actual in expected.items():
++        if key == "protocol.quality_limit" and "protocol.quality_baseline_tolerance" in conditions:
++            approved = conditions["protocol.quality_baseline_tolerance"]
++        else:
++            approved = conditions[key]
++        if key == "optimization.repository":
++            approved = str(Path(approved).expanduser().resolve())
++        elif key.endswith("_command"):
++            approved = shlex.split(approved)
++        elif (
++            key == "acceptance.baseline_revision"
++            and args.evaluation_mode == "abba"
++            and approved != actual
++            and (args.repo / ".git").exists()
++        ):
++            if actual == candidates.identity(args.repo, args.include):
++                actual = project_service.revision(args.repo, args.include)
++        if approved != actual:
++            conflicts.append({"field": key, "approved": approved, "actual": actual})
++    return conflicts
++
++
++def start(args, run_session):
++    if args.intake is None:
++        return _blocked(
++            "missing_intake", message="Supply --intake with an approved performance brief."
++        )
++    path = args.intake.resolve()
++    if not path.is_file():
++        return _blocked("missing_intake", message="Collect task intake before campaign start.")
++    destination = args.session.resolve()
++    if destination.exists() or any(
++        destination.is_relative_to(p.resolve()) for p in (args.repo, args.protocol)
++    ):
++        raise ValueError("Use a new campaign directory outside project/protocol")
++    try:
 +        with file_lock(path.with_name(path.name + ".lock")):
 +            gate, record = task_intake.campaign_gate(path)
 +            if not gate["task_brief"] or (not args.prepare_intake and not gate["complete"]):
@@ -36,7 +106,6 @@
 +        settings = plan["evaluation_settings"]
 +        primary = next(obj for obj in settings["objectives"] if obj["id"] == settings["ranking"][0])
 +        if primary["threshold_type"] != "relative_percent":
-+            # A native absolute/point gain cannot stand in for the reviewed percentage gate.
 +            plan["candidate_min_improvement_pct"] = conditions["acceptance.min_improvement_pct"]
 +    else:
 +        plan["evaluation_settings"]["quality_bound"] = {
@@ -58,90 +127,7 @@
 +    return {**result, "intake": receipt}
 diff --git a/src/inferrsi/apps/cli/intake_contract.py b/src/inferrsi/apps/cli/intake_contract.py
 new file mode 100644
-index 000000000..6aeec7bbd
+index 000000000..ce197875d
 --- /dev/null
 +++ b/src/inferrsi/apps/cli/intake_contract.py
-@@ -0,0 +1,815 @@
-+"""intake/v1: host-independent task intake records for missing-field confirmation.
-+
-+A card, a numbered text fallback and an optional check-in interview all write the
-+same record. The record separates what the user stated (``confirmed``), what a
-+card answer proposes (``proposed``), what stays unknown (``unknown``) and what
-+conflicts (``conflicting``). ``evaluate`` selects the questions that unblock the
-+next stage, derives ``allowed_next`` and never authenticates acceptance
-+thresholds: a proposal kept in a record does not freeze a gate.
-+
-+The contract performs no I/O. Mapped numeric values use the task-input validator. Callers in
-+``inferrsi.apps.cli.task_intake`` load the versioned spec and record, then call these
-+pure functions. ``source`` is declared by the caller and is not authenticated.
-+"""
-+
-+from __future__ import annotations
-+
-+import copy
-+import hashlib
-+import json
-+import math
-+
-+from . import task_input
-+
-+SCHEMA_VERSION = 1
-+
-+# Stage vocabulary. ``read_only_preparation`` is always allowed; the others are
-+# unlocked only when no field declared ``required_before`` that stage is missing.
-+STAGES = (
-+    "read_only_preparation",
-+    "baseline_measurement",
-+    "candidate_search",
-+    "service_execution",
-+    "device_execution",
-+)
-+BLOCKING_STAGES = STAGES[1:]
-+
-+# Where each field lands when a record is handed to an execution entry.
-+MAP_TARGETS = ("task-input/v1", "campaign-protocol", "session-protocol",
-+               "summary-only", "day0-spec")
-+
-+STATUSES = ("confirmed", "proposed", "assumed", "unknown", "conflicting",
-+            "stale", "superseded")
-+SETTLED = ("confirmed", "proposed")
-+BLOCKING = ("unknown", "assumed", "conflicting", "stale", "superseded")
-+
-+ACCEPTANCE = "acceptance."
-+# An issue or file can supply acceptance values only for a user-selected reference.
-+AUTHORITATIVE = ("issue", "frozen_gate")
-+REFERENCE = "acceptance.reference"
-+
-+_QUESTION = "q:"
-+_BRIEF_QUESTION = "q:task_brief:"
-+
-+
-+class IntakeError(ValueError):
-+    """A record, spec or answer is rejected; ``code`` names the recorded reason."""
-+
-+    def __init__(self, code: str, message: str):
-+        super().__init__(message)
-+        self.code = code
-+
-+
-+def _canonical(value: object) -> str:
-+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-+
-+
-+def _field_paths(spec: dict) -> dict[str, dict]:
-+    return {field["path"]: field for field in spec["fields"]}
-+
-+
-+def validate_spec(spec: object) -> list[dict]:
-+    """Return field-level problems in a packaged intake spec, in spec order."""
-+    problems: list[dict] = []
-+
-+    def bad(path: str, message: str) -> None:
-+        problems.append({"field": path, "message": message})
-+
-+    if not isinstance(spec, dict):
-+        return [{"field": "$", "message": "must be an object"}]
-+    if spec.get("schema_version") != SCHEMA_VERSION:
-+        bad("schema_version", f"must be {SCHEMA_VERSION}")
-+    if not isinstance(spec.get("task"), str) or not spec["task"].strip():
-+        bad("task", "must be a non-empty string")
+@@ -0,0 +1,808 @@

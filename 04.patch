@@ -1,3 +1,31 @@
++# Read back the returned task_brief, including campaign_launch. Wait for the user's card reply.
++inferrsi task intake answer --record <record.json> --question <returned-brief-id> --value approve
++inferrsi campaign start ... --intake <record.json>
++```
++
++Preparation stages the inputs in a temporary directory, compares them with the
++intake and returns an executable brief. It starts no campaign or measurements.
++The final approval binds the effective settings, including defaults, candidate
++inputs, commands, sampling, budget and the evaluation configuration. Running
++preparation again with the same settings preserves an existing approval. A
++changed launch needs a fresh card. Planning-only briefs can still be reviewed.
++Before service configuration is bound, the brief labels its quality inputs
++provisional. Show the prepared inequality on the final card for a measured run.
++
++Start rechecks the selected gate and the approved launch before creating the
++campaign. Missing, stale and mismatched approval exits with status 2. A matching
++preapproval starts unattended. The frozen `plan.json` references a receipt in
++`plan/` with the SHA-256 and revision of the retained `intake.json`.
++
++For AB/BA the two approved measurement commands describe the same script with
++the candidate path supplied at execution. The quality command returns its
++identity of the dataset actually scored in the top-level `dataset` field. It must
++match both `--quality-benchmark` and the approved benchmark (including its version
++and split). Missing or mismatched identity makes the result `INCONCLUSIVE`.
++Also return the boolean acceptance key and a numeric result under the approved quality metric
++(JSON dotted paths are supported). A boolean metric on the acceptance key is
++compared as 1 or 0. The independent final checks the approved absolute bound or
++relative improvement against the pinned baseline. For service reuse, the first
 +ranked objective names the final metric and the configuration supplies its
 +dataset, score key, threshold or allowed degradation, commands and sampling.
 +The bound brief displays an absolute score threshold or the allowed change from
@@ -41,7 +69,7 @@ index 4d92f1500..c1850256a 100644
  - Verify without writing: `python tools/build_skill_coverage.py --check`
  
 diff --git a/plugins/inferrsi/skills/inferrsi/SKILL.md b/plugins/inferrsi/skills/inferrsi/SKILL.md
-index d039ebeff..bee9a8c2c 100644
+index d039ebeff..ef146c194 100644
 --- a/plugins/inferrsi/skills/inferrsi/SKILL.md
 +++ b/plugins/inferrsi/skills/inferrsi/SKILL.md
 @@ -70,6 +70,60 @@ when the run requires it. During a frozen evaluation use the assigned entry
@@ -72,29 +100,3 @@ index d039ebeff..bee9a8c2c 100644
 +Only after the user's reply, record its values using `task intake answer --record
 +<record.json> --question <id> --value <value>` (or `--unknown`). Re-evaluate before
 +proceeding. Use `--source repo_inspection` for facts observed in the workspace.
-+A benchmark, previous run or agent-written gate may suggest conditions. The user
-+must identify the acceptance issue or frozen plan, directly or in an answer.
-+Use `--frozen <user-selected-file>` for its acceptance values. Preserve unresolved
-+conditions and never run a campaign without its intake to bypass open questions.
-+Collect a numeric final performance goal (metric, direction, absolute bound and
-+unit or minimum percent improvement over the baseline). Ask which benchmark,
-+version/split, workload and concurrency to replay. Confirm the quality metric,
-+comparison, numeric tolerance and unit. A script name, "faster", "no quality
-+loss", and a per-candidate retention default leave decisions open. A selected
-+plan can supply explicit criteria; show them to the user in the brief.
-+
-+For a measured campaign, prepare the intended invocation **before** the final
-+card: run `campaign start --prepare-intake --intake <record.json>` with the
-+actual launch options. Resolve any reported mismatch. Include the returned
-+`task_brief.campaign_launch` settings in the read-back. Preparation starts no
-+measurements. A planning-only brief can be reviewed without a launch.
-+
-+When `brief_review` becomes `awaiting_confirmation`, read back the **complete
-+task brief** in the user's language. Include the performance and accuracy
-+inequalities, both benchmark inputs, baseline, model/device, timing and
-+comparison, commands, change scope, failure policy and budget from
-+`task_brief.conditions`. Then send a **separate native card** asking the user
-+to approve this exact brief or request changes. Wait for a fresh explicit reply.
-+Record it with `task intake answer` using the returned `q:task_brief:...` ID and
-+`approve` or `revise`. For revisions, apply the corrections and present the
-+entire updated brief on a fresh card. This final review also applies to a fully

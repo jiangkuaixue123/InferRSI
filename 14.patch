@@ -1,3 +1,72 @@
+diff --git a/src/inferrsi/apps/cli/task_intake.py b/src/inferrsi/apps/cli/task_intake.py
+new file mode 100644
+index 000000000..1ee0ba447
+--- /dev/null
++++ b/src/inferrsi/apps/cli/task_intake.py
+@@ -0,0 +1,361 @@
++"""intake/v1 CLI: evaluate, answer and summarize confirmation records.
++
++The contract lives in ``inferrsi.apps.cli.intake_contract``. This module loads the
++versioned per-task spec and the record file, applies the pure contract
++functions and writes the record back. It starts nothing and measures nothing;
++``execution`` stays ``not started`` until an existing operation is authorized.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import tempfile
++import uuid
++from importlib.resources import files
++from pathlib import Path
++
++from ..storage.artifacts import file_lock
++from . import intake_contract as intake
++
++
++def _spec_root() -> Path:
++    return Path(str(files("inferrsi").joinpath("knowledge", "data", "skill_library", "tasks")))
++
++
++def spec_path(task: str) -> Path:
++    return _spec_root() / task / "intake.json"
++
++
++def load_spec(task: str) -> dict:
++    path = spec_path(task)
++    if not path.is_file():
++        raise intake.IntakeError("unknown_task", f"No intake spec is packaged for {task}")
++    try:
++        data = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, json.JSONDecodeError) as exc:
++        raise intake.IntakeError("invalid_spec", f"{task}/intake.json: {exc}") from exc
++    return intake.load_spec(data)
++
++
++def read_record(path: Path) -> dict:
++    try:
++        raw = Path(path).read_text(encoding="utf-8")
++    except OSError as exc:
++        raise intake.IntakeError(
++            "unreadable_record", f"cannot read {path}: {exc.strerror or exc}") from exc
++    try:
++        record = json.loads(raw)
++    except json.JSONDecodeError as exc:
++        raise intake.IntakeError("invalid_record", f"{path}: {exc}") from exc
++    if not isinstance(record, dict):
++        raise intake.IntakeError("invalid_record", f"{path}: record must be an object")
++    return record
++
++
++def _payload(record: dict) -> str:
++    return json.dumps(record, ensure_ascii=False, indent=2) + "\n"
++
++
++def write_record(path: Path, record: dict) -> str:
++    """Write the record atomically; return the sha256 of the written bytes."""
++    path = Path(path)
 +    path.parent.mkdir(parents=True, exist_ok=True)
 +    text = _payload(record)
 +    descriptor, temp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
@@ -21,8 +90,6 @@
 +        raise intake.IntakeError(
 +            "invalid_frozen", f"frozen gate record: {first['field']} {first['message']}")
 +    acceptance = preview["task"]["acceptance"]
-+    # ``reference`` names the gate record itself and is path-normalized by the task
-+    # contract, so it is not compared; ``task_input.frozen_gate`` makes the same choice.
 +    return {f"acceptance.{name}": value for name, value in acceptance.items()
 +            if name != "reference" and preview["sources"][f"acceptance.{name}"] == "yaml"}
 +
@@ -65,7 +132,6 @@
 +            record["selected_gate"] = snapshot
 +            record["selected_gate_file"] = str(frozen_path.resolve())
 +        if record.get("selected_gate") == snapshot:
-+            # Preserve disagreements for the frozen-gate comparison.
 +            matching = {}
 +            for field in spec["fields"]:
 +                key = field["path"]
@@ -75,8 +141,6 @@
 +                        matching[key] = frozen[key]
 +            record = intake.set_fields(record, spec, matching, source="frozen_gate")
 +        else:
-+            # The file is new or changed since the selection. Re-open the reference
-+            # question and persist the revocation before handing off to campaign start.
 +            record.pop("selected_gate", None)
 +            record.pop("selected_gate_file", None)
 +            record.pop("brief_decision", None)
@@ -98,36 +162,3 @@
 +
 +
 +def evaluate_command(args) -> dict:
-+    record_path = Path(args.record)
-+    existing = record_path.is_file()
-+    if existing:
-+        record = read_record(record_path)
-+    else:
-+        if not args.task:
-+            raise intake.IntakeError(
-+                "missing_task", "the record does not exist yet; pass --task")
-+        record = intake.new_record(args.task, record_id="intake-" + uuid.uuid4().hex[:12])
-+    if args.task and args.task != record["task"]:
-+        raise intake.IntakeError(
-+            "task_mismatch", f"the record already records {record['task']}, not {args.task}")
-+    spec = load_spec(record["task"])
-+    record = intake.reconcile_record(record, spec)
-+    values = parse_sets(args.set)
-+    selecting = intake.REFERENCE in values and args.source in ("prompt", "grilling_brief")
-+    bind_file = selecting and not existing
-+    if existing and selecting and intake.selected_reference(record) != values[intake.REFERENCE]:
-+        if intake.evaluate(record, spec)["brief_review"] != "changes_requested":
-+            raise intake.IntakeError("user_answer_required",
-+                                     "Use the reference question to record the user's reply")
-+        # An explicit correction to a returned brief replaces the reference. Values
-+        # sourced from its former authority must be obtained from the new selection.
-+        previous = intake.selected_reference(record)
-+        record["fields"] = {key: entry for key, entry in record["fields"].items()
-+                            if key != intake.REFERENCE and not (
-+                                previous and entry.get("authority_reference") == previous)}
-+        record.pop("selected_gate", None)
-+        record.pop("selected_gate_file", None)
-+        bind_file = True
-+    if values:
-+        record = intake.set_fields(record, spec, values, source=args.source)
-+    return _evaluate_and_save(record_path, record, spec, args.frozen,

@@ -1,130 +1,120 @@
-+    cli.main(["campaign", "final", "--directory", str(project[3]), "--reason", "retest"])
-+    capsys.readouterr()
-+    final = json.loads((project[3] / "state.json").read_bytes())["final"]["assessment"]
-+    assert (final["verdict"], final["reason"]) == ("FAIL", "final_performance_target_not_met")
++    assert intake.evaluate(edited, spec)["brief_review"] == "awaiting_confirmation"
 +
 +
-+def test_boolean_quality_success_does_not_override_numeric_limit(project, capsys):  # noqa: F811
-+    from tests.apps.test_project_optimization import submit
-+    from tests.fixtures.diagnosis import diagnosis_args
-+
-+    (project[1] / "quality.py").write_text(
-+        "import json, sys\nfrom pathlib import Path\n"
-+        "value = json.loads((Path(sys.argv[1])/'config.json').read_text())['metric']\n"
-+        "Path(sys.argv[2]).write_text(json.dumps({'correct':True,'errors':value-10}))\n")
-+    args = approved_start(start_arguments(project), overrides={
-+        "protocol.quality_metric": "errors", "protocol.quality_limit": 0,
-+        "protocol.quality_comparator": "at_most", "protocol.quality_unit": "tokens"})
++def test_campaign_checks_live_gate_and_exact_brief(project, tmp_path, capsys):  # noqa: F811
++    gate = tmp_path / "gate.yaml"
++    gate.write_bytes((PERFORMANCE / "frozen-gate.yaml").read_bytes())
++    path = tmp_path / "record.json"
++    args = ["task", "intake", "evaluate", "--task", "task-performance", "--record",
++            str(path), "--frozen", str(gate), "--json"]
++    for key, value in (COMPLETE["fields"]["values"] | {intake.REFERENCE: str(gate)}).items():
++        args.extend(("--set", f"{key}={value}"))
 +    assert cli.main(args) == 0
-+    capsys.readouterr()
-+    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
-+    capsys.readouterr()
-+    _, view = submit(project, capsys, 20)
-+    assert view["best"]["kind"] == "baseline"
-+    assert view["latest_observation"]["assessment"]["quality_passed"] is False
-diff --git a/tests/fixtures/campaign_intake.py b/tests/fixtures/campaign_intake.py
-new file mode 100644
-index 000000000..3cdf9b668
---- /dev/null
-+++ b/tests/fixtures/campaign_intake.py
-@@ -0,0 +1,126 @@
-+"""Synthetic user approval for integration tests that exercise measured campaigns."""
-+
-+import io
-+import json
-+import shlex
-+from contextlib import redirect_stdout
-+from pathlib import Path
-+
-+from inferrsi.apps.cli import intake_contract as intake
-+from inferrsi.apps.cli import main, task_intake
-+from inferrsi.apps.cli.arguments import parser
-+from inferrsi.harness import candidates, project_service
++    brief = json.loads(capsys.readouterr().out)["task_brief"]
++    assert cli.main(start_arguments(project, extra=("--intake", str(path)))) == 2
++    assert json.loads(capsys.readouterr().out)["brief_review"] == "awaiting_confirmation"
++    assert not project[3].exists()
++    assert cli.main(["task", "intake", "answer", "--record", str(path), "--question",
++                     brief["id"], "--value", "approve", "--json"]) == 0
++    assert json.loads(capsys.readouterr().out)["complete"]
++    gate.write_bytes((PERFORMANCE / "frozen-mismatch.yaml").read_bytes())
++    assert cli.main(start_arguments(project, extra=("--intake", str(path)))) == 2
++    assert json.loads(capsys.readouterr().out)["brief_review"] == "collecting_inputs"
++    assert not project[3].exists()
 +
 +
-+def approved_start(arguments, *, overrides=None):
-+    args = parser().parse_args(arguments)
-+    path = args.session.with_suffix(".intake.json")
-+    fixture = Path(__file__).parent / "intake/performance/complete.json"
-+    data = json.loads(fixture.read_text())
-+    values = {**data["fields"]["values"], **data["acceptance"]["values"]}
-+    values.update(
-+        {
-+            "optimization.repository": str(args.repo.resolve()),
-+            "environment.rounds": args.rounds,
-+            "environment.max_minutes": args.max_minutes,
-+            "protocol.comparison": args.evaluation_mode,
-+            "protocol.target_kind": "absolute",
-+        }
-+    )
-+    if args.evaluation_mode == "service_reuse":
-+        cfg = project_service.read(args.evaluation_config)
-+        project_service.validate(cfg)
-+        obj = next(o for o in cfg["objectives"] if o["id"] == cfg["ranking"][0])
-+        q = cfg["quality"]
-+        cmp = "at_least" if q["direction"] == "maximize" else "at_most"
-+        relative = q["mode"] == "baseline_comparison"
-+        values.update(
-+            {
-+                "acceptance.baseline_revision": project_service.revision(args.repo, args.include),
-+                "acceptance.metric_key": obj["key"],
-+                "acceptance.metric_unit": obj["unit"],
-+                "acceptance.direction": obj["direction"],
-+                "acceptance.min_improvement_pct": obj["gain_threshold"],
-+                "protocol.target_value": obj["domain"]["max"]
-+                if obj["direction"] == "minimize"
-+                else obj["domain"]["min"],
-+                "protocol.quality_benchmark": q["dataset"],
-+                "protocol.quality_metric": q["key"],
-+                "protocol.quality_comparator": cmp,
-+                "protocol.quality_limit": q["tolerance" if relative else "threshold"],
-+                "protocol.service_lifecycle": "fixture owned process",
-+                "optimization.workload": cfg["conditions"]["workload"],
-+                "optimization.model": cfg["conditions"]["model"],
-+                "protocol.timing_boundary": cfg["conditions"]["timing_scope"],
-+                "environment.repetitions": cfg["sampling"]["baseline"]["repetitions"],
-+                "environment.baseline_command": shlex.join(cfg["commands"]["measure"]),
-+                "environment.candidate_command": shlex.join(cfg["commands"]["measure"]),
-+                "environment.quality_command": shlex.join(cfg["commands"]["quality"]),
-+            }
-+        )
-+    else:
-+        values.update(
-+            {
-+                "acceptance.baseline_revision": candidates.identity(args.repo, args.include),
-+                "acceptance.metric_key": args.metric_key,
-+                "acceptance.metric_unit": args.metric_unit,
-+                "acceptance.direction": args.direction,
-+                "acceptance.min_improvement_pct": args.min_improvement_pct,
-+                "protocol.target_value": 10000 if args.direction == "minimize" else 0,
-+                "protocol.quality_metric": args.quality_key,
-+                "protocol.quality_comparator": "equal",
-+                "protocol.quality_limit": 1,
-+                "protocol.quality_unit": "boolean",
-+                "protocol.timing_boundary": args.scope,
-+                "environment.repetitions": args.repetitions,
-+                "environment.baseline_command": args.measure_command,
-+                "environment.candidate_command": args.measure_command,
-+                "environment.quality_command": args.quality_command,
-+            }
-+        )
-+    values.update(overrides or {})
-+    spec = task_intake.load_spec("task-performance")
-+    record = intake.new_record("task-performance", record_id="fixture-user")
-+    record = intake.set_fields(record, spec, values, source="prompt")
-+    accepted = {key: value for key, value in values.items() if key.startswith("acceptance.")}
-+    record = intake.set_fields(record, spec, accepted, source="issue")
-+    task_intake.write_record(path, record)
-+    invocation = [*arguments, "--intake", str(path)]
-+    output = io.StringIO()
-+    with redirect_stdout(output):
-+        assert main([*invocation, "--prepare-intake"]) == 0, output.getvalue()
-+        brief = json.loads(output.getvalue())["task_brief"]
-+        assert (
-+            main(
-+                [
-+                    "task",
-+                    "intake",
-+                    "answer",
-+                    "--record",
-+                    str(path),
++def test_old_or_modified_record_cannot_reuse_a_cached_approval(tmp_path):
++    path = tmp_path / "record.json"
++    record = approved_record()
++    record["fields"]["environment.rounds"]["value"] += 1
++    path.write_text(json.dumps(record))
++    assert task_intake.campaign_gate(path)[0]["brief_review"] == "awaiting_confirmation"
++    record.pop("brief_decision")
++    del record["fields"]["protocol.target_value"]
++    record["complete"] = True
++    path.write_text(json.dumps(record))
++    assert task_intake.campaign_gate(path)[0]["brief_review"] == "collecting_inputs"
++
++
++def test_brief_displays_the_full_precision_of_both_thresholds():
++    record = build()
++    for path in ("protocol.target_value", "protocol.quality_limit"):
++        record["fields"][path]["value"] = 0.123456789
++    brief = intake.evaluate(record, spec_for())["task_brief"]
++    assert brief["performance_target"] == "p95_ttft <= 0.123456789 ms"
++    assert brief["quality_gate"] == "token mismatches <= 0.123456789 tokens"
++
++
++def test_user_can_choose_a_different_gate_after_returning_the_brief(tmp_path, capsys):
++    path = tmp_path / "intake.json"
++    record, view = ask(build(), spec_for())
++    path.write_text(json.dumps(record))
++    assert cli.main(["task", "intake", "answer", "--record", str(path), "--question",
++                     view["task_brief"]["id"], "--value", "revise", "--json"]) == 0
++    assert json.loads(capsys.readouterr().out)["brief_review"] == "changes_requested"
++    gate = PERFORMANCE / "frozen-mismatch.yaml"
++    assert cli.main(["task", "intake", "evaluate", "--record", str(path), "--set",
++                     f"{intake.REFERENCE}={gate}", "--frozen", str(gate), "--json"]) == 0
++    updated = json.loads(capsys.readouterr().out)
++    assert updated["fields"]["acceptance.metric_key"]["value"] == "p99_ttft"
++    assert updated["fields"]["acceptance.metric_key"]["source"] == "frozen_gate"
++    assert updated["brief_review"] == "awaiting_confirmation"
++    assert updated["task_brief"]["id"] != view["task_brief"]["id"]
++
++@pytest.mark.parametrize(("key", "invalid", "valid"), [
++    ("environment.repetitions", 0, 1),
++    ("environment.rounds", -1, 1),
++    ("environment.max_minutes", -5, 0.5),
++    ("environment.max_minutes", 10081, 10080),
++    ("acceptance.min_improvement_pct", -1, 0),
++])
++def test_execution_bounds_apply_to_set_and_open_card(tmp_path, capsys, key, invalid, valid):
++    path = tmp_path / "intake.json"
++    record = ["--record", str(path), "--json"]
++    path.write_text(json.dumps(build(set(ALL_VALUES) - {key})))
++    assert cli.main(["task", "intake", "evaluate", *record]) == 0
++    view = json.loads(capsys.readouterr().out)
++    question = next(q for q in view["questions"] if q["field"] == key)
++    unchanged = path.read_bytes()
++    for cmd in (["evaluate", "--set", f"{key}={invalid}"],
++                ["answer", "--question", question["id"], "--value", str(invalid)]):
++        assert cli.main(["task", "intake", *cmd, *record]) == 2
++        error = json.loads(capsys.readouterr().out)
++        assert error["error"] == "invalid_value" and key in error["message"]
++        assert path.read_bytes() == unchanged
++    assert cli.main(["task", "intake", "answer", "--question", question["id"],
++                     "--value", str(valid), *record]) == 0
++    assert json.loads(capsys.readouterr().out)["fields"][key]["value"] == valid
++
++
++def test_loaded_approved_record_reopens_unusable_execution_values(project, tmp_path, capsys):  # noqa: F811
++    path = tmp_path / "intake.json"
++    record = approved_record()
++    invalid = {"environment.repetitions": 0, "environment.rounds": -1,
++               "environment.max_minutes": -5}
++    for key, value in invalid.items():
++        record["fields"][key]["value"] = value
++    record["complete"] = True
++    path.write_text(json.dumps(record))
++    assert cli.main(start_arguments(project, extra=("--intake", str(path)))) == 2
++    gate = json.loads(capsys.readouterr().out)
++    assert gate["status"] == "blocked" and gate["task_brief"] is None
++    assert gate["allowed_next"] == ["read_only_preparation"]
++    assert not project[3].exists()
++
++    cmd = ["task", "intake", "evaluate", "--record", str(path), "--json"]
++    assert cli.main(cmd) == 0
++    reopened = json.loads(capsys.readouterr().out)
++    assert all(reopened["fields"][key]["status"] == "unknown" for key in invalid)
++    assert "brief_decision" not in json.loads(path.read_text())
++    assert reopened["revision"] > record["revision"]
++    for key in ("environment.repetitions", "environment.max_minutes", "environment.rounds"):
++        assert cli.main(["task", "intake", "answer", "--record", str(path), "--json",
++                         "--question", f"q:{key}", "--value", "1"]) == 0
++        view = json.loads(capsys.readouterr().out)
++    assert view["brief_review"] == "awaiting_confirmation"
++    assert not view["complete"]
++
++
++@pytest.mark.parametrize(("flag", "value", "reason"), [
++    ("--metric-unit", "other", "launch_conflict"),

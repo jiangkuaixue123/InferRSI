@@ -1,3 +1,46 @@
++            raise IntakeError("already_answered",
++                              f"{question_id} was already recorded; re-evaluate for "
++                              "current questions")
++        named = question_id[len(_QUESTION):] if question_id.startswith(_QUESTION) else None
++        if named in _field_paths(spec):
++            raise IntakeError("stale_answer",
++                              f"{question_id} is not open in the current record; re-evaluate")
++        raise IntakeError("unknown_question",
++                          f"No recorded open question {question_id}; run evaluate first")
++    if question_id.startswith(_BRIEF_QUESTION):
++        view = evaluate(record, spec)
++        if (view["brief_review"] != "awaiting_confirmation"
++                or view["task_brief"]["id"] != question_id):
++            raise IntakeError("stale_answer", "Present the current task brief before answering")
++        if unknown:
++            value = "revise"
++        if value not in ("approve", "revise"):
++            raise IntakeError("invalid_value", "Reply to the task brief with approve or revise")
++        record["brief_decision"] = {"question": question_id, "value": value}
++        record["open_questions"] = []
++        return record
++    fields = _field_paths(spec)
++    field = fields.get(question.get("field"))
++    if field is None:
++        raise IntakeError("unknown_question",
++                          f"{question_id} names a field outside {spec['task']}; re-evaluate")
++    snapshot = _question(record, spec, field)["depends_on"]
++    if snapshot != question.get("depends_on"):
++        raise IntakeError("stale_answer",
++                          f"{question_id} was asked before its dependencies changed; "
++                          "re-evaluate")
++    if not _applicable(record, field) or _entry(record, field["path"]).get("status") not in (
++        "unknown", "conflicting", "assumed",
++    ):
++        raise IntakeError("stale_answer",
++                          f"{question_id} no longer applies; re-evaluate")
++    updated = copy.deepcopy(record)
++    if unknown:
++        updated["fields"][field["path"]] = {
++            "value": None, "source": f"answer:{question_id}",
++            "status": "unknown", "asked": True,
++        }
++        _bump(updated, updated["revision"] + 1)
 +    else:
 +        source = f"answer:{question_id}"
 +        updated["fields"][field["path"]] = {
@@ -87,72 +130,3 @@ index 7f5b3f8c0..613056ba4 100644
              if problem:
                  errors.append(_error(field.path, f"{field.flag} {problem}", "cli"))
              elif field.acceptance:
-diff --git a/src/inferrsi/apps/cli/task_intake.py b/src/inferrsi/apps/cli/task_intake.py
-new file mode 100644
-index 000000000..88988dcf3
---- /dev/null
-+++ b/src/inferrsi/apps/cli/task_intake.py
-@@ -0,0 +1,368 @@
-+"""intake/v1 CLI: evaluate, answer and summarize confirmation records.
-+
-+The contract lives in ``inferrsi.apps.cli.intake_contract``. This module loads the
-+versioned per-task spec and the record file, applies the pure contract
-+functions and writes the record back. It starts nothing and measures nothing;
-+``execution`` stays ``not started`` until an existing operation is authorized.
-+"""
-+
-+from __future__ import annotations
-+
-+import hashlib
-+import json
-+import os
-+import tempfile
-+import uuid
-+from importlib.resources import files
-+from pathlib import Path
-+
-+from ..storage.artifacts import file_lock
-+from . import intake_contract as intake
-+
-+
-+def _spec_root() -> Path:
-+    return Path(str(files("inferrsi").joinpath("knowledge", "data", "skill_library", "tasks")))
-+
-+
-+def spec_path(task: str) -> Path:
-+    return _spec_root() / task / "intake.json"
-+
-+
-+def load_spec(task: str) -> dict:
-+    path = spec_path(task)
-+    if not path.is_file():
-+        raise intake.IntakeError("unknown_task", f"No intake spec is packaged for {task}")
-+    try:
-+        data = json.loads(path.read_text(encoding="utf-8"))
-+    except (OSError, json.JSONDecodeError) as exc:
-+        raise intake.IntakeError("invalid_spec", f"{task}/intake.json: {exc}") from exc
-+    return intake.load_spec(data)
-+
-+
-+def read_record(path: Path) -> dict:
-+    try:
-+        raw = Path(path).read_text(encoding="utf-8")
-+    except OSError as exc:
-+        raise intake.IntakeError(
-+            "unreadable_record", f"cannot read {path}: {exc.strerror or exc}") from exc
-+    try:
-+        record = json.loads(raw)
-+    except json.JSONDecodeError as exc:
-+        raise intake.IntakeError("invalid_record", f"{path}: {exc}") from exc
-+    if not isinstance(record, dict):
-+        raise intake.IntakeError("invalid_record", f"{path}: record must be an object")
-+    return record
-+
-+
-+def _payload(record: dict) -> str:
-+    return json.dumps(record, ensure_ascii=False, indent=2) + "\n"
-+
-+
-+def write_record(path: Path, record: dict) -> str:
-+    """Write the record atomically; return the sha256 of the written bytes."""
-+    path = Path(path)

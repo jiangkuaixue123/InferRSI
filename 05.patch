@@ -1,3 +1,29 @@
++A benchmark, previous run or agent-written gate may suggest conditions. The user
++must identify the acceptance issue or frozen plan, directly or in an answer.
++Use `--frozen <user-selected-file>` for its acceptance values. Preserve unresolved
++conditions and never run a campaign without its intake to bypass open questions.
++Collect a numeric final performance goal (metric, direction, absolute bound and
++unit or minimum percent improvement over the baseline). Ask which benchmark,
++version/split, workload and concurrency to replay. Confirm the quality metric,
++comparison, numeric tolerance and unit. A script name, "faster", "no quality
++loss", and a per-candidate retention default leave decisions open. A selected
++plan can supply explicit criteria; show them to the user in the brief.
++
++For a measured campaign, prepare the intended invocation **before** the final
++card: run `campaign start --prepare-intake --intake <record.json>` with the
++actual launch options. Resolve any reported mismatch. Include the returned
++`task_brief.campaign_launch` settings in the read-back. Preparation starts no
++measurements. A planning-only brief can be reviewed without a launch.
++
++When `brief_review` becomes `awaiting_confirmation`, read back the **complete
++task brief** in the user's language. Include the performance and accuracy
++inequalities, both benchmark inputs, baseline, model/device, timing and
++comparison, commands, change scope, failure policy and budget from
++`task_brief.conditions`. Then send a **separate native card** asking the user
++to approve this exact brief or request changes. Wait for a fresh explicit reply.
++Record it with `task intake answer` using the returned `q:task_brief:...` ID and
++`approve` or `revise`. For revisions, apply the corrections and present the
++entire updated brief on a fresh card. This final review also applies to a fully
 +specified initial prompt. Until approval, allow only read-only preparation.
 +Pass the approved record to `campaign start --intake <record.json>` and use its
 +criteria in the frozen protocol and final evaluation.
@@ -5,6 +31,16 @@
  ## Optimize an ordinary user project
  
  Default to the current Agent conversation. Read `campaign start --help` through
+@@ -87,6 +141,9 @@ Declare every execution input with repeatable `--include`; freeze scripts and
+ inputs through `--protocol`. Checks must use the retained `{candidate}`,
+ `{baseline}`, `{protocol}` and output `{result}` paths as appropriate. Confirm
+ they execute the submitted code, not an unrelated installed package or service.
++For AB/BA, pass the approved dataset version and split as `--quality-benchmark`.
++The quality script must report the identity of the corpus it actually scored in
++the top-level `dataset` field alongside the quality result.
+ This command uses the same Harness controller as the packaged task path below.
+ 
+ Edit the returned working candidate. Submit each hypothesis and candidate with
 diff --git a/src/inferrsi/apps/cli/__init__.py b/src/inferrsi/apps/cli/__init__.py
 index c76418009..bea5d8991 100644
 --- a/src/inferrsi/apps/cli/__init__.py
@@ -64,7 +100,7 @@ index c76418009..bea5d8991 100644
                  if "exit_code" in result:
                      return result["exit_code"]
 diff --git a/src/inferrsi/apps/cli/arguments.py b/src/inferrsi/apps/cli/arguments.py
-index c6c241b2f..c77edf282 100644
+index c6c241b2f..03896bdfd 100644
 --- a/src/inferrsi/apps/cli/arguments.py
 +++ b/src/inferrsi/apps/cli/arguments.py
 @@ -183,6 +183,11 @@ def _optimization_actions(stages, *, project=False):
@@ -75,42 +111,3 @@ index c6c241b2f..c77edf282 100644
 +                           help="intake/v1 record; the campaign refuses to start until it is "
 +                                "complete for the performance task")
 +        start.add_argument("--prepare-intake", action="store_true",
-+                           help="Present the executable plan for approval without starting")
-         start.add_argument("--repo", type=Path, required=True)
-         start.add_argument("--include", action="append", required=True,
-                            help="Project-relative input file/directory; repeat for dependencies")
-@@ -532,7 +537,7 @@ def parser(*, parser_class=argparse.ArgumentParser) -> argparse.ArgumentParser:
-         child.add_argument("--dry-run", action="store_true")
- 
-     task = commands.add_parser(
--        "task", help="Read a YAML task file without starting or writing anything"
-+        "task", help="Read a YAML task file, or keep an intake record; starts nothing"
-     )
-     task_actions = task.add_subparsers(dest="task_action", required=True)
-     for name, text in (
-@@ -546,6 +551,38 @@ def parser(*, parser_class=argparse.ArgumentParser) -> argparse.ArgumentParser:
-             _task_overrides(child)
-     task_actions.add_parser("schema", help="Print the packaged task JSON Schema")
-     task_actions.add_parser("template", help="Print the packaged task template")
-+    intake_parser = task_actions.add_parser(
-+        "intake", help="Evaluate or answer intake/v1 confirmation records before a measured task"
-+    )
-+    intake_actions = intake_parser.add_subparsers(dest="intake_action", required=True)
-+    evaluate = intake_actions.add_parser(
-+        "evaluate", help="List the questions that unblock the next stage and persist the record"
-+    )
-+    evaluate.add_argument("--task", help="Primary task id; required when the record is new")
-+    evaluate.add_argument("--record", type=Path, required=True, help="intake/v1 record file")
-+    evaluate.add_argument("--set", action="append", default=[], metavar="PATH=VALUE",
-+                          help="Fields the request already states; repeatable")
-+    evaluate.add_argument("--source", default="prompt",
-+                          help="Where --set values came from (prompt, issue, task_file, ...)")
-+    evaluate.add_argument("--frozen", type=Path,
-+                          help="Compare a gate task file; import its stated values when the user "
-+                               "selects this file as the acceptance reference")
-+    evaluate.add_argument("--json", action="store_true")
-+    answer = intake_actions.add_parser(
-+        "answer", help="Record one answer to an open question and re-evaluate")
-+    answer.add_argument("--record", type=Path, required=True)
-+    answer.add_argument("--question", required=True, help="Question id from evaluate")
-+    choice = answer.add_mutually_exclusive_group(required=True)

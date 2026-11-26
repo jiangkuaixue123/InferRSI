@@ -50,14 +50,14 @@ index 24a168e62..d88200aed 100644
    [shared workflow](optimization-workflow-unification.md) defines round limits,
    recovery and dashboard generation from the Harness control record.
 diff --git a/docs/guides/optimization-workflow-unification.md b/docs/guides/optimization-workflow-unification.md
-index 09d2465f9..d08a7b007 100644
+index 09d2465f9..785f3d7e9 100644
 --- a/docs/guides/optimization-workflow-unification.md
 +++ b/docs/guides/optimization-workflow-unification.md
-@@ -170,8 +170,10 @@ Harness 没有常驻 Agent 驱动。Agent 逐次调用这些操作，代码在
+@@ -170,14 +170,17 @@ Harness 没有常驻 Agent 驱动。Agent 逐次调用这些操作，代码在
  
  下面是命令结构；尖括号是需要落实的项目条件，不是可直接执行的默认值。命令以 argv 执行，不经 shell；Windows 命令参数中的路径建议用正斜杠。
  
-+Prepare the executable brief and obtain the final card reply as described in [task intake](task-intake.md#campaign-hand-off).
++启动前，按[任务确认流程](task-intake.md#campaign-hand-off)准备实际启动参数，复述任务书并等待用户确认。
 +
  ```bash
 -inferrsi campaign start --directory <campaign-dir-outside-project> \
@@ -65,14 +65,11 @@ index 09d2465f9..d08a7b007 100644
    --repo <editable-project> --include <source-dir> --include <config-file> \
    --protocol <acceptance-dir> --instructions <task.md> \
    --measure-command '"{python}" "{protocol}/measure.py" --project "{candidate}" --result "{result}"' \
-diff --git a/docs/guides/service-reuse-campaigns.md b/docs/guides/service-reuse-campaigns.md
-index 0848b32ff..cfe8f8b34 100644
---- a/docs/guides/service-reuse-campaigns.md
-+++ b/docs/guides/service-reuse-campaigns.md
-@@ -116,8 +116,10 @@ Use `campaign start --help` for shared budget/input arguments. In service mode
- supply `--evaluation-config <protocol.json>` and omit the AB/BA single-metric,
- quality-command and sampling flags. Mixing both parameter sets is an error.
- 
-+Prepare the executable brief and confirm the final card using the [campaign hand-off](task-intake.md#campaign-hand-off).
-+
- ```text
+   --quality-command '"{python}" "{protocol}/quality.py" --project "{candidate}" --reference "{baseline}" --result "{result}"' \
+   --metric-key <json.field> --metric-unit <unit> --direction <maximize-or-minimize> \
+-  --quality-key <json.boolean-field> --scope <actual-validation-scope> \
++  --quality-benchmark <dataset-version-and-split> --quality-key <json.boolean-field> \
++  --scope <actual-validation-scope> \
+   --min-improvement-pct <agreed-gate> --warmups <count> --repetitions <count> \
+   --rounds <limit> --round-mode up_to --max-minutes <total-budget> \
+   --evaluation-timeout-seconds <per-evaluation-budget> --knowledge on

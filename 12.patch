@@ -1,9 +1,65 @@
++    brief["id"] = _BRIEF_QUESTION + hashlib.sha256(_canonical(brief).encode()).hexdigest()
++    return brief
++
++
++def _brief_question(brief: dict) -> dict:
++    return {"id": brief["id"], "field": "task_brief",
++            "question": "After reviewing the complete task brief, do you approve this revision?",
++            "options": [{"value": "approve", "hint": "accept the brief as shown"},
++                        {"value": "revise", "hint": "request changes and keep execution blocked"}],
++            "fallback": "unknown"}
++
++
++def evaluate(record: dict, spec: dict, *, frozen: dict | None = None) -> dict:
++    """Return the questions, blockers, conflicts and allowed next steps.
++
++    Questions are the fields of the lowest missing ``batch`` that still apply;
++    a conflicting field is asked before anything else so the user can resolve
++    it. A field answered with ``unknown`` is not asked again: it blocks its
++    stage until a later source states it.
++    """
++    record = reconcile_record(record, spec)
++    fields = _field_paths(spec)
++    conflicts = _frozen_conflicts(record, spec, frozen)
++    question_fields = []
++    for field in spec["fields"]:
++        if not _applicable(record, field):
++            continue
++        entry = _entry(record, field["path"])
++        if entry.get("status") == "conflicting":
++            question_fields.append(field)
++    if not question_fields:
++        missing = []
++        for field in spec["fields"]:
++            if not _applicable(record, field):
++                continue
++            entry = _entry(record, field["path"])
++            if entry["status"] == "assumed" or (
++                entry["status"] == "unknown" and not entry.get("asked")
++            ):
++                missing.append(field)
++        if missing:
++            lowest = min(field.get("batch", 1) for field in missing)
++            question_fields = [field for field in missing if field.get("batch", 1) == lowest]
++    questions = [_question(record, spec, field) for field in question_fields]
++    blockers = []
++    for stage in BLOCKING_STAGES:
++        blocked_by = []
++        for path, entry in ((path, _entry(record, path)) for path in fields):
++            field = fields[path]
++            if stage not in field.get("required_before", []):
++                continue
++            if not _applicable(record, field):
++                continue
++            status = entry.get("status")
++            if status in BLOCKING or (
++                stage == "candidate_search" and path.startswith(ACCEPTANCE)
++                and status != "confirmed"
++            ):
 +                blocked_by.append({"field": path, "status": status})
 +        if blocked_by:
 +            blockers.append({"stage": stage, "blocked_by": blocked_by})
 +    if conflicts:
-+        # A gate mismatch blocks candidate search even when every stated field
-+        # is otherwise settled: the accepted record is no longer the same gate.
 +        entries = [{"field": item["field"], "status": "conflicting"} for item in conflicts]
 +        existing = next((item for item in blockers if item["stage"] == "candidate_search"),
 +                        None)
@@ -33,8 +89,6 @@
 +                    blockers.append(blocker)
 +                blocker["blocked_by"].append({"field": "task_brief", "status": review})
 +    blocked_stages = {item["stage"] for item in blockers}
-+    # Device and service execution always need a separate authorization; the
-+    # record only unlocks preparation, baseline measurement and candidate search.
 +    allowed_next = ["read_only_preparation"] + [
 +        stage for stage in ("baseline_measurement", "candidate_search")
 +        if stage not in blocked_stages
@@ -84,46 +138,3 @@
 +        answered = any(entry.get("source") == f"answer:{question_id}"
 +                       for entry in record["fields"].values())
 +        if answered:
-+            raise IntakeError("already_answered",
-+                              f"{question_id} was already recorded; re-evaluate for "
-+                              "current questions")
-+        named = question_id[len(_QUESTION):] if question_id.startswith(_QUESTION) else None
-+        if named in _field_paths(spec):
-+            raise IntakeError("stale_answer",
-+                              f"{question_id} is not open in the current record; re-evaluate")
-+        raise IntakeError("unknown_question",
-+                          f"No recorded open question {question_id}; run evaluate first")
-+    if question_id.startswith(_BRIEF_QUESTION):
-+        view = evaluate(record, spec)
-+        if (view["brief_review"] != "awaiting_confirmation"
-+                or view["task_brief"]["id"] != question_id):
-+            raise IntakeError("stale_answer", "Present the current task brief before answering")
-+        if unknown:
-+            value = "revise"
-+        if value not in ("approve", "revise"):
-+            raise IntakeError("invalid_value", "Reply to the task brief with approve or revise")
-+        record["brief_decision"] = {"question": question_id, "value": value}
-+        record["open_questions"] = []
-+        return record
-+    fields = _field_paths(spec)
-+    field = fields.get(question.get("field"))
-+    if field is None:
-+        raise IntakeError("unknown_question",
-+                          f"{question_id} names a field outside {spec['task']}; re-evaluate")
-+    snapshot = _question(record, spec, field)["depends_on"]
-+    if snapshot != question.get("depends_on"):
-+        raise IntakeError("stale_answer",
-+                          f"{question_id} was asked before its dependencies changed; "
-+                          "re-evaluate")
-+    if not _applicable(record, field) or _entry(record, field["path"]).get("status") not in (
-+        "unknown", "conflicting", "assumed",
-+    ):
-+        raise IntakeError("stale_answer",
-+                          f"{question_id} no longer applies; re-evaluate")
-+    updated = copy.deepcopy(record)
-+    if unknown:
-+        updated["fields"][field["path"]] = {
-+            "value": None, "source": f"answer:{question_id}",
-+            "status": "unknown", "asked": True,
-+        }
-+        _bump(updated, updated["revision"] + 1)

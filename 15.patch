@@ -1,3 +1,34 @@
++    record_path = Path(args.record)
++    existing = record_path.is_file()
++    if existing:
++        record = read_record(record_path)
++    else:
++        if not args.task:
++            raise intake.IntakeError(
++                "missing_task", "the record does not exist yet; pass --task")
++        record = intake.new_record(args.task, record_id="intake-" + uuid.uuid4().hex[:12])
++    if args.task and args.task != record["task"]:
++        raise intake.IntakeError(
++            "task_mismatch", f"the record already records {record['task']}, not {args.task}")
++    spec = load_spec(record["task"])
++    record = intake.reconcile_record(record, spec)
++    values = parse_sets(args.set)
++    selecting = intake.REFERENCE in values and args.source in ("prompt", "grilling_brief")
++    bind_file = selecting and not existing
++    if existing and selecting and intake.selected_reference(record) != values[intake.REFERENCE]:
++        if intake.evaluate(record, spec)["brief_review"] != "changes_requested":
++            raise intake.IntakeError("user_answer_required",
++                                     "Use the reference question to record the user's reply")
++        previous = intake.selected_reference(record)
++        record["fields"] = {key: entry for key, entry in record["fields"].items()
++                            if key != intake.REFERENCE and not (
++                                previous and entry.get("authority_reference") == previous)}
++        record.pop("selected_gate", None)
++        record.pop("selected_gate_file", None)
++        bind_file = True
++    if values:
++        record = intake.set_fields(record, spec, values, source=args.source)
++    return _evaluate_and_save(record_path, record, spec, args.frozen,
 +                              selecting_reference=bind_file)
 +
 +
@@ -105,39 +136,3 @@
 +             f"complete: {'true' if view['complete'] else 'false'}"]
 +    lines.extend(_render_brief(view))
 +    lines.extend(_render_questions(view))
-+    if view["conflicts"]:
-+        lines.append("conflicts:")
-+        for item in view["conflicts"]:
-+            lines.append(f"  {item['field']}: record {item.get('record_value')!r} vs "
-+                         f"frozen {item.get('frozen_value')!r}")
-+    if view["blockers"]:
-+        lines.append("blocked stages:")
-+        for blocker in view["blockers"]:
-+            fields = ", ".join(
-+                f"{item['field']} ({item['status']})" for item in blocker["blocked_by"])
-+            lines.append(f"  {blocker['stage']}: {fields}")
-+    lines.append("allowed next: " + ", ".join(view["allowed_next"]))
-+    return "\n".join(lines)
-+
-+
-+def render_summary(view: dict) -> str:
-+    lines = [f"task: {view['task']}  revision: {view['revision']}  "
-+             f"complete: {'true' if view['complete'] else 'false'}"]
-+    lines.extend(_render_brief(view))
-+    for label, values in (("confirmed", view["confirmed"]), ("proposed", view["proposed"])):
-+        if values:
-+            lines.append(f"{label}:")
-+            for path, value in values.items():
-+                lines.append(f"  {path} = {json.dumps(value, ensure_ascii=False)}")
-+    if view["unknown"]:
-+        lines.append("unknown:")
-+        lines.extend(f"  {path}" for path in view["unknown"])
-+    if view["conflicts"]:
-+        lines.append("conflicts:")
-+        for item in view["conflicts"]:
-+            lines.append(f"  {item['field']}: record {item.get('record_value')!r} vs "
-+                         f"frozen {item.get('frozen_value')!r}")
-+    if view["blockers"]:
-+        lines.append("blocked stages:")
-+        for blocker in view["blockers"]:
-+            lines.append(f"  {blocker['stage']}")

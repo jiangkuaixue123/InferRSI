@@ -1,3 +1,22 @@
+@@ -194,6 +197,7 @@ assessment 另附 `paired_statistics`：同一次重复内的第 k 个基线与
+ 结果协议：
+ 
+ - 测量脚本正常结束并写 JSON，提供指定字段的有限正数。
++- 质量脚本在顶层 `dataset` 字段报告实际评分的数据集、版本及切分标识，与已批准的 `--quality-benchmark` 一致。缺少标识或标识不匹配时，质量证据为 `INCONCLUSIVE`。
+ - 质量脚本正常结束并写 JSON，提供指定字段的严格布尔值。`false` 拒绝候选；基线拒绝说明协议/基线前提不成立。
+ - 脚本可捕获已知候选错误，正常结束并写 `{"status":"candidate_failure","reason":"..."}`。候选失败保留为 FAIL 并消耗一轮，后续可修改。不要把设备故障捕获成候选错误。
+ - 非零退出、超时、缺少或无法解析的输出不猜测为正确性失败，而是 INCONCLUSIVE，阻止继续把缺失证据当成有效比较。
+diff --git a/docs/guides/service-reuse-campaigns.md b/docs/guides/service-reuse-campaigns.md
+index 0848b32ff..cfe8f8b34 100644
+--- a/docs/guides/service-reuse-campaigns.md
++++ b/docs/guides/service-reuse-campaigns.md
+@@ -116,8 +116,10 @@ Use `campaign start --help` for shared budget/input arguments. In service mode
+ supply `--evaluation-config <protocol.json>` and omit the AB/BA single-metric,
+ quality-command and sampling flags. Mixing both parameter sets is an error.
+ 
++Prepare the executable brief and confirm the final card using the [campaign hand-off](task-intake.md#campaign-hand-off).
++
+ ```text
 -inferrsi campaign start --evaluation-mode service_reuse --evaluation-config <protocol.json> ...
 +inferrsi campaign start --intake <approved-record.json> --evaluation-mode service_reuse --evaluation-config <protocol.json> ...
  inferrsi campaign baseline --session <campaign>
@@ -27,10 +46,10 @@ index a98469097..24c7e3cfb 100644
  | JSON Schema (draft 2020-12) | `src/inferrsi/apps/cli/task-input/v1/schema.json` in the wheel | `inferrsi task schema` |
 diff --git a/docs/guides/task-intake.md b/docs/guides/task-intake.md
 new file mode 100644
-index 000000000..f32516f79
+index 000000000..081ddb9d3
 --- /dev/null
 +++ b/docs/guides/task-intake.md
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,228 @@
 +# Task intake records (intake/v1)
 +
 +`intake/v1` is the confirmation record an Agent fills before a measured task.
@@ -99,31 +118,3 @@ index 000000000..f32516f79
 +| --- | --- |
 +| `path` | Field path; `acceptance.*` paths carry the gate boundary |
 +| `maps_to` | `task-input/v1`, `campaign-protocol`, `session-protocol`, `summary-only` or `day0-spec` |
-+| `batch` | Question batch (1 = goal and gates, 2 = environment identity, 3 = protocol, scope and budget) |
-+| `type` | `text`, `number`, `integer` or `choice` |
-+| `question`, `options` | Card text and options; `{value, hint}` objects |
-+| `depends_on` | Fields that must be settled before this question applies |
-+| `required_when` | Conditional applicability, e.g. service reuse fields |
-+| `required_before` | Stages this field blocks while it is not settled |
-+| `user_choice` | Repository-derived values for this decision become suggestions for the user |
-+
-+`task-day-0` fields map to `day0-spec` and stay in the record and the summary.
-+They do not enter a `task-input/v1` file, which rejects unknown keys.
-+
-+## Commands
-+
-+```text
-+inferrsi task intake evaluate --task task-performance --record <record.json> \
-+    --set optimization.objective="reduce p95 TTFT" --source prompt [--json]
-+inferrsi task intake answer --record <record.json> --question <id> --value <value> [--json]
-+inferrsi task intake answer --record <record.json> --question <id> --unknown [--json]
-+inferrsi task intake summary --record <record.json> [--json]
-+```
-+
-+`evaluate` creates the record when it does not exist, merges `--set` values,
-+writes the record back and prints the questions that unblock the next stage.
-+`answer` applies one recorded question, bumps the revision and re-evaluates.
-+`summary` reads without writing.
-+
-+Every command accepts `--frozen <gate.yaml>`: a schema-v1 task file whose
-+`acceptance` section is compared with the record, except `acceptance.reference`,
