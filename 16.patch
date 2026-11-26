@@ -1,3 +1,93 @@
++    selected = record["fields"].get(intake.REFERENCE, {}).get("source") == f"answer:{args.question}"
++    return _evaluate_and_save(record_path, record, spec, args.frozen, selecting_reference=selected)
++
++
++def summary_command(args) -> dict:
++    record = read_record(Path(args.record))
++    spec = load_spec(record["task"])
++    record, frozen = _evaluate_gate(record, spec, args.frozen, selecting_reference=False)
++    return intake.summary(record, spec, frozen=frozen)
++
++
++def campaign_gate(path: Path, *, expected_task: str = "task-performance",
++                  frozen: dict | None = None) -> tuple[dict, dict]:
++    """Evaluate a record for ``campaign start``; return the gate and the record it read.
++
++    Never starts or measures anything. The caller retains the returned record, so the
++    bytes kept next to the campaign are the ones this gate evaluated.
++    """
++    record = read_record(Path(path))
++    if record.get("task") != expected_task:
++        raise intake.IntakeError(
++            "task_mismatch", f"{path} records {record.get('task')}, not {expected_task}")
++    spec = load_spec(expected_task)
++    record = intake.reconcile_record(record, spec)
++    record, selected = _evaluate_gate(record, spec, None, selecting_reference=False)
++    view = intake.evaluate(record, spec, frozen=frozen if frozen is not None else selected)
++    return {
++        "status": "ready" if view["complete"] else "blocked",
++        "task": expected_task,
++        "record": str(path),
++        "revision": record["revision"],
++        "complete": view["complete"],
++        "questions": view["questions"],
++        "brief_review": view["brief_review"],
++        "task_brief": view["task_brief"],
++        "blockers": view["blockers"],
++        "conflicts": view["conflicts"],
++        "allowed_next": view["allowed_next"],
++        "execution": "not started",
++    }, record
++
++
++def prepare_launch(path, record, launch):
++    if record.get("campaign_launch") != launch:
++        record["campaign_launch"] = launch
++        record.pop("brief_decision", None)
++        record["revision"] += 1
++    view = _evaluate_and_save(path, record, load_spec(record["task"]), None,
++                              selecting_reference=False)
++    return {**view, "status": "prepared", "execution": "not started"}
++
++
++def attach_record(session_dir: Path, record: dict, gate: dict) -> dict:
++    """Retain the gated record in the campaign directory and name its digest."""
++    digest = write_record(Path(session_dir) / "intake.json", record)
++    return {"intake": {
++        "record": "intake.json",
++        "task": record["task"],
++        "revision": record["revision"],
++        "sha256": digest,
++        "brief_id": gate["task_brief"]["id"],
++        "gate": gate["status"],
++    }}
++
++
++def _render_brief(view: dict) -> list[str]:
++    brief = view["task_brief"]
++    if not brief:
++        return []
++    return [f"Task brief (revision {brief['revision']}, {view['brief_review']})",
++            f"Performance target: {brief['performance_target']}",
++            f"Accuracy on {brief['benchmark']}: {brief['quality_gate']}",
++            *(f"  {key}: {value}" for key, value in brief["conditions"].items()),
++            *([json.dumps(brief["campaign_launch"], ensure_ascii=False, indent=2)]
++              if "campaign_launch" in brief else [])]
++
++
++def _render_questions(view: dict) -> list[str]:
++    lines = []
++    if view["questions"]:
++        lines.append("Ask the user the following questions using the host question-card tool. "
++                     "Wait for their reply before measurement or candidate work. "
++                     "Use numbered text when the tool is unavailable.")
++        lines.append("questions:")
++        for question in view["questions"]:
++            lines.append(f"  {question['id']}  {question['question']}")
++            for option in question["options"]:
++                hint = f"  ({option['hint']})" if option.get("hint") else ""
++                lines.append(f"      - {option['value']}{hint}")
++            lines.append("      - unknown  (record as unknown; dependent stages stay blocked)")
 +    return lines
 +
 +
@@ -53,76 +143,3 @@
 +        else:
 +            path = args.record
 +            path.parent.mkdir(parents=True, exist_ok=True)
-+            with file_lock(path.with_name(path.name + ".lock")):
-+                if args.intake_action == "evaluate":
-+                    result = evaluate_command(args)
-+                else:
-+                    result = answer_command(args)
-+    except BlockingIOError:
-+        print(json.dumps({"error": "record_busy", "message": "Retry after the current update",
-+                          "execution": "not started"}))
-+        return 2
-+    except intake.IntakeError as exc:
-+        print(json.dumps({"error": exc.code, "message": str(exc), "execution": "not started"},
-+                         ensure_ascii=False, indent=2))
-+        return 2
-+    if getattr(args, "json", False):
-+        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
-+    else:
-+        print(render_summary(result) if args.intake_action == "summary" else render(result))
-+    return 0
-diff --git a/src/inferrsi/harness/optimization_session.py b/src/inferrsi/harness/optimization_session.py
-index 8a522793a..cadbf0b31 100644
---- a/src/inferrsi/harness/optimization_session.py
-+++ b/src/inferrsi/harness/optimization_session.py
-@@ -58,7 +58,9 @@ def _session_assess(root, directory, plan, execution, mechanism=None):
-     if plan["task_source"] == "project":
-         from inferrsi.harness.project import assess
- 
--        return assess(directory, plan["evaluation_settings"], execution, mechanism=mechanism)
-+        target = plan.get("performance_target") if directory.parent == root / "final" else None
-+        return assess(directory, plan["evaluation_settings"], execution, mechanism=mechanism,
-+                      final_target=target)
-     return run_protocol(root / "frozen", plan["frozen_files"]["optimization.py"], "assess",
-                         launch_directory=directory, directory=directory,
-                         settings=plan["evaluation_settings"],
-@@ -133,7 +135,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
-                     knowledge_reader=None,
-                     retain_context=None, external_knowledge=None, external_provider=None,
-                     external_project=None, external_provider_for=None,
--                    report_metadata=None) -> dict:
-+                    report_metadata=None, initialize=None) -> dict:
-     """Run one operation; discovery and knowledge access are supplied by the caller."""
-     from inferrsi.harness import optimization
- 
-@@ -141,6 +143,8 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
-     if args.session_action == "start":
-         import math
- 
-+        initialize = initialize or optimization.initialize
-+
-         from inferrsi.harness.artifact_primitives import sha256
-         from inferrsi.harness.candidates import identity, retain
-         from inferrsi.harness.task_protocol import prepare
-@@ -167,6 +171,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
-                 "metric_key",
-                 "metric_unit",
-                 "quality_key",
-+                "quality_benchmark",
-                 "scope",
-                 "direction",
-                 "min_improvement_pct",
-@@ -205,7 +210,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
-                     "python": args.python,
-                     **settings,
-                 }
--                result = optimization.initialize(root, plan)
-+                result = initialize(root, plan)
-                 result["instructions"] = (
-                     "Run campaign baseline before candidate search. Record the measured "
-                     "bottleneck with campaign diagnose before knowledge or rounds. "
-@@ -227,7 +232,8 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
-                 raise ValueError("Campaign output must be outside the editable project")
-             identity(repo, args.include)  # Reject invalid inputs before preparation writes.
-             specification = {key: getattr(args, key) for key in (
--                "metric_key", "metric_unit", "quality_key", "scope", "direction",

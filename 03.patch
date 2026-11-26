@@ -1,3 +1,64 @@
++value came from, and only fields mapped to `task-input/v1` are expected to
++reach a task file.
++
++The contract is `inferrsi.apps.cli.intake_contract`; the commands are
++`inferrsi task intake ...`. Nothing here starts a process, probes a device or
++freezes a gate. `evaluate` and `answer` update the named record under a sibling `.lock` file.
++If an update is in progress, retry after it finishes.
++
++## Files
++
++| File | Owner |
++| --- | --- |
++| `src/inferrsi/apps/cli/intake_contract.py` | Record validation, question selection, answers, summary; pure functions |
++| `skill_library/tasks/task-performance/intake.json` | Field spec for a performance round |
++| `skill_library/tasks/task-day-0/intake.json` | Day-zero fields; none map to `task-input/v1` |
++| `src/inferrsi/apps/cli/task_intake.py` | Record file I/O and the commands |
++| `tests/fixtures/intake/` | Complete, partial and frozen-gate fixtures |
++
++## Record
++
++```json
++{
++  "schema_version": 1,
++  "record_id": "intake-...",
++  "revision": 3,
++  "task": "task-performance",
++  "primary_task": {"value": "task-performance", "source": "prompt", "status": "confirmed"},
++  "phase": "intake",
++  "fields": {
++    "acceptance.reference": {"value": "<acceptance-issue>", "source": "prompt", "status": "confirmed"},
++    "acceptance.metric_key": {"value": "p95_ttft", "source": "issue", "status": "confirmed",
++                              "authority_reference": "<acceptance-issue>"},
++    "protocol.comparison": {"value": null, "source": "answer:q:protocol.comparison:<issued-token>",
++                            "status": "unknown", "asked": true}
++  },
++  "open_questions": [],
++  "blockers": [],
++  "conflicts": [],
++  "allowed_next": ["read_only_preparation"],
++  "execution": "not started"
++}
++```
++
++- `source` names where a value came from: `prompt`, `answer:<question-id>`,
++  `task_file`, `issue`, `repo_inspection`, `derived`, `default`,
++  `grilling_brief`, `frozen_gate` or `unknown`. The caller declares it; InferRSI
++  records it and does not authenticate it.
++- `status` is one of `confirmed`, `proposed`, `assumed`, `unknown`,
++  `conflicting`, `stale`, `superseded`.
++- `allowed_next` is derived by `evaluate`; a caller never fills it by hand.
++  `service_execution` and `device_execution` never appear there: they need a
++  separate authorization.
++
++## Field specs
++
++Each primary task owns an `intake.json` next to its `SKILL.md`. A field declares:
++
++| Key | Meaning |
++| --- | --- |
++| `path` | Field path; `acceptance.*` paths carry the gate boundary |
++| `maps_to` | `task-input/v1`, `campaign-protocol`, `session-protocol`, `summary-only` or `day0-spec` |
 +| `batch` | Question batch (1 = goal and gates, 2 = environment identity, 3 = protocol, scope and budget) |
 +| `type` | `text`, `number`, `integer` or `choice` |
 +| `question`, `options` | Card text and options; `{value, hint}` objects |
@@ -40,7 +101,11 @@
 +   batches wait until earlier batches settle.
 +4. `unknown` is a recorded answer: the field is not asked again, and it blocks
 +   every stage named in `required_before`.
-+5. Each question carries a dependency snapshot. An answer is rejected as
++5. Reply with the full ID returned on the displayed card. Its token binds the
++   record, field, dependencies and options at issuance. Re-evaluation keeps the
++   IDs of open, unchanged questions. A changed or reopened card receives a new
++   token. For a legacy field-only card, re-evaluate and present its new ID.
++   An answer is rejected as
 +   `stale_answer` when the snapshot changed, as `already_answered` when the same
 +   question was answered once, and as `unknown_question` when it was never
 +   issued. A late reply to a superseded question changes nothing.
@@ -59,58 +124,3 @@
 +user's selection. For example, after the user chooses the file on a card:
 +
 +```text
-+inferrsi task intake answer --record <record.json> --question q:acceptance.reference \
-+    --value <gate.yaml> --frozen <gate.yaml>
-+```
-+
-+The record retains the selected file's explicit acceptance values. Defaults and
-+arbitrary `--set` values cannot fill missing gate fields. If the file is first
-+presented later, or its acceptance contents change, evaluating it reopens the
-+reference question. Conflicting metric values remain visible. Reconfirm the
-+file and resolve conflicting proposals with the user before search.
-+
-+For mapped numeric fields, intake uses the task-input/v1 bounds. Repetitions
-+and rounds must be positive integers, the time budget must be positive and at
-+most seven days, and the minimum improvement percentage must be nonnegative.
-+Invalid replies leave the question open. Older records with out-of-range values
-+reopen those questions and require a fresh brief approval after correction.
-+
-+## Final performance brief
-+
-+A final goal has a metric, direction and numeric target. For an absolute
-+target supply the bound in the metric unit. For a relative target supply the
-+minimum percent improvement over the pinned baseline. The per-candidate
-+retention rule remains a separate input. State the workload, accuracy benchmark
-+and split, quality metric, comparison, numeric threshold and unit. Include the
-+command that evaluates that condition. Repository findings are suggestions
-+until the user chooses them.
-+
-+Once all applicable fields and acceptance sources are settled, `evaluate` or
-+the last field `answer` returns a `task_brief`, `brief_review:
-+awaiting_confirmation` and one revision-specific question. Read the **whole**
-+brief back in the user's language and send a separate native approve-or-revise
-+card. Hosts without cards use the same explicit decision in text. Record the
-+reply against the exact question displayed:
-+
-+```text
-+inferrsi task intake answer --record <record.json> --question <brief-question-id> --value approve
-+```
-+
-+An explicit `revise` or unknown reply keeps work paused until edits and a new
-+review. A missing reply leaves the card open. Capture corrections through intake,
-+resolve any conflicts and present the revised brief before asking again. If the
-+user selects a different acceptance reference after returning the brief, pass
-+that correction to `evaluate --set acceptance.reference=...` with the new
-+`--frozen` file when applicable. Intake discards values bound to the former
-+authority.
-+The question ID binds the record, field revision and applicable values.
-+Evaluation and summary alone cannot grant approval. Measured work requires
-+`brief_review: approved`. Older records are re-evaluated on use.
-+
-+## Campaign hand-off
-+
-+For an executable campaign, prepare the complete launch before presenting the
-+final card. Pass the same project, protocol and budget options to both commands.
-+
-+```text
-+inferrsi campaign start ... --intake <record.json> --prepare-intake

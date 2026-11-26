@@ -1,9 +1,83 @@
++    return conflicts
++
++
++def start(args, run_session):
++    if args.intake is None:
++        return _blocked(
++            "missing_intake", message="Supply --intake with an approved performance brief."
++        )
++    path = args.intake.resolve()
++    if not path.is_file():
++        return _blocked("missing_intake", message="Collect task intake before campaign start.")
++    destination = args.session.resolve()
++    if destination.exists() or any(
++        destination.is_relative_to(p.resolve()) for p in (args.repo, args.protocol)
++    ):
++        raise ValueError("Use a new campaign directory outside project/protocol")
++    try:
++        with file_lock(path.with_name(path.name + ".lock")):
++            gate, record = task_intake.campaign_gate(path)
++            if not gate["task_brief"] or (not args.prepare_intake and not gate["complete"]):
++                return gate
++            if not args.prepare_intake and "campaign_launch" not in record:
++                return _blocked(
++                    "unbound_brief", message="Use --prepare-intake and review the executable brief."
++                )
++            with tempfile.TemporaryDirectory(prefix="inferrsi-intake-") as tmp:
++                staged_args = copy.copy(args)
++                staged_args.session = Path(tmp) / "campaign"
++                frozen = run_session(staged_args, initialize=lambda _, plan: {"plan": plan})
++                plan = frozen["plan"]
++                brief = gate["task_brief"]
++                if args.evaluation_mode == "abba":
++                    plan["evaluation_settings"]["quality_bound"] = {
++                        key: brief["conditions"]["protocol.quality_" + key]
++                        for key in ("metric", "comparator", "limit", "unit")
++                    }
++                launch, expected = _execution(plan, args, staged_args.session)
++                conflicts = _conflicts(brief["conditions"], expected, args)
++                if conflicts:
++                    return _blocked("launch_conflict", conflicts=conflicts)
++                if args.prepare_intake:
++                    return task_intake.prepare_launch(path, record, launch)
++                if launch != brief["campaign_launch"]:
++                    return _blocked("launch_changed",
++                                    message="Prepare and review the changed launch.")
++                result = _initialize(staged_args.session, destination, plan, record, gate)
++                return {**result, "instructions": frozen["instructions"]}
++    except BlockingIOError:
++        return _blocked("record_busy", message="Retry when the intake update finishes.")
++
++
++def _initialize(staged, destination, plan, record, gate):
++    conditions = gate["task_brief"]["conditions"]
++    plan["performance_target"] = {
++        name: conditions["protocol." + name] for name in ("target_kind", "target_value")
++    }
++    if plan.get("evaluation_mode") == "service_reuse":
++        settings = plan["evaluation_settings"]
++        primary = next(obj for obj in settings["objectives"] if obj["id"] == settings["ranking"][0])
++        if primary["threshold_type"] != "relative_percent":
++            plan["candidate_min_improvement_pct"] = conditions["acceptance.min_improvement_pct"]
++    receipt = task_intake.attach_record(staged, record, gate)["intake"]
++    relative = "plan/intake-" + receipt["sha256"] + ".json"
++    task_intake.write_record(staged / relative, receipt)
++    plan["intake_receipt"] = relative
++    destination.mkdir(parents=True, exist_ok=False)
++    try:
++        for path in staged.iterdir():
++            shutil.move(str(path), destination / path.name)
++        result = optimization.initialize(destination, plan)
++    except BaseException:
++        shutil.rmtree(destination)
++        raise
++    return {**result, "intake": receipt}
 diff --git a/src/inferrsi/apps/cli/intake_contract.py b/src/inferrsi/apps/cli/intake_contract.py
 new file mode 100644
-index 000000000..ce197875d
+index 000000000..d3ce2f075
 --- /dev/null
 +++ b/src/inferrsi/apps/cli/intake_contract.py
-@@ -0,0 +1,808 @@
+@@ -0,0 +1,810 @@
 +"""intake/v1: host-independent task intake records for missing-field confirmation.
 +
 +A card, a numbered text fallback and an optional check-in interview all write the
@@ -76,81 +150,4 @@ index 000000000..ce197875d
 +
 +    def bad(path: str, message: str) -> None:
 +        problems.append({"field": path, "message": message})
-+
-+    if not isinstance(spec, dict):
-+        return [{"field": "$", "message": "must be an object"}]
-+    if spec.get("schema_version") != SCHEMA_VERSION:
-+        bad("schema_version", f"must be {SCHEMA_VERSION}")
-+    if not isinstance(spec.get("task"), str) or not spec["task"].strip():
-+        bad("task", "must be a non-empty string")
-+    fields = spec.get("fields")
-+    if not isinstance(fields, list) or not fields:
-+        bad("fields", "must be a non-empty array")
-+        return problems
-+    seen: set[str] = set()
-+    for index, field in enumerate(fields):
-+        where = f"fields[{index}]"
-+        if not isinstance(field, dict):
-+            bad(where, "must be an object")
-+            continue
-+        path = field.get("path")
-+        if not isinstance(path, str) or not path.strip():
-+            bad(f"{where}.path", "must be a non-empty string")
-+        elif path in seen:
-+            bad(f"{where}.path", f"duplicates {path}")
-+        else:
-+            seen.add(path)
-+        if field.get("maps_to") not in MAP_TARGETS:
-+            bad(f"{where}.maps_to", f"must be one of {', '.join(MAP_TARGETS)}")
-+        if (field.get("maps_to") == "task-input/v1" and field.get("type") in ("integer", "number")
-+                and isinstance(path, str) and path not in task_input.BY_PATH):
-+            bad(f"{where}.path", f"{path} is not a task-input/v1 field")
-+        if not isinstance(field.get("question"), str) or not field["question"].strip():
-+            bad(f"{where}.question", "must be a non-empty string")
-+        batch = field.get("batch", 1)
-+        if type(batch) is not int or batch < 1:
-+            bad(f"{where}.batch", "must be a positive integer")
-+        required = field.get("required_before", [])
-+        if not isinstance(required, list) or any(
-+            stage not in BLOCKING_STAGES for stage in required
-+        ):
-+            bad(f"{where}.required_before",
-+                f"must list stages from {', '.join(BLOCKING_STAGES)}")
-+        depends = field.get("depends_on", [])
-+        if not isinstance(depends, list) or any(not isinstance(dep, str) for dep in depends):
-+            bad(f"{where}.depends_on", "must be an array of field paths")
-+        options = field.get("options", [])
-+        if not isinstance(options, list) or any(
-+            not isinstance(option, dict) or "value" not in option for option in options
-+        ):
-+            bad(f"{where}.options", "must be an array of {value, hint} objects")
-+        if "user_choice" in field and type(field["user_choice"]) is not bool:
-+            bad(f"{where}.user_choice", "must be a boolean")
-+        when = field.get("required_when")
-+        if when is not None and (
-+            not isinstance(when, dict) or not isinstance(when.get("field"), str)
-+            or "equals" not in when
-+        ):
-+            bad(f"{where}.required_when", "must be {field, equals}")
-+    for field in fields:
-+        if not isinstance(field, dict):
-+            continue
-+        when = field.get("required_when")
-+        if isinstance(when, dict) and when.get("field") not in seen:
-+            bad(f"{field.get('path', '?')}.required_when",
-+                f"names unknown field {when.get('field')}")
-+        for dep in field.get("depends_on", []) if isinstance(field.get("depends_on"), list) else ():
-+            if dep not in seen:
-+                bad(f"{field.get('path', '?')}.depends_on", f"names unknown field {dep}")
-+    return problems
-+
-+
-+def load_spec(spec: object) -> dict:
-+    """Validate and return the spec; raise ``IntakeError('invalid_spec')``."""
-+    problems = validate_spec(spec)
-+    if problems:
-+        first = problems[0]
-+        raise IntakeError("invalid_spec", f"{first['field']}: {first['message']}")
-+    return spec
-+
 +

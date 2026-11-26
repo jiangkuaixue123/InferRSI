@@ -1,128 +1,132 @@
-+    for task in ("task-performance", "task-day-0"):
-+        spec = spec_for(task)
-+        assert spec["task"] == task
-+        assert intake.validate_spec(spec) == []
-+        assert all(field["maps_to"] in intake.MAP_TARGETS for field in spec["fields"])
++    changed = settings()
++    changed["sampling"]["final"]["warmups"] += 1
++    campaign["config"].write_text(json.dumps(changed))
++    assert main(args) == 2
++    assert json.loads(campaign["capsys"].readouterr().out)["reason"] == "launch_changed"
++    assert not campaign["root"].exists()
++    campaign["config"].write_text(json.dumps(original))
++    assert main(args) == 0
++    plan = project_service.read(campaign["root"] / "plan.json")
++    assert (campaign["root"] / plan["intake_receipt"]).is_file()
 +
 +
-+def test_day0_fields_stay_out_of_task_input_v1():
-+    spec = spec_for("task-day-0")
-+    assert all(field["maps_to"] == "day0-spec" for field in spec["fields"])
++@pytest.mark.parametrize(("mode", "direction", "expected", "good", "bad"), [
++    ("absolute", "maximize", "accuracy >= 90 points (absolute threshold; higher is better)",
++     90, 89.95),
++    ("absolute", "minimize", "accuracy <= 90 points (absolute threshold; lower is better)",
++     89.95, 90.05),
++    ("baseline_comparison", "maximize",
++     "accuracy >= baseline accuracy - 0.1 points (baseline comparison; higher is better; "
++     "reference: retained baseline score for the current comparison epoch)", 89.95, 89.8),
++    ("baseline_comparison", "minimize",
++     "accuracy <= baseline accuracy + 0.1 points (baseline comparison; lower is better; "
++     "reference: retained baseline score for the current comparison epoch)", 90.05, 90.2),
++])
++def test_executable_service_brief_describes_the_actual_quality_gate(
++    campaign, mode, direction, expected, good, bad
++):
++    from inferrsi.apps.cli import task_intake
++    from tests.fixtures.campaign_intake import approved_start
++
++    config = settings()
++    quality = config["quality"]
++    quality.update(mode=mode, direction=direction, key="accuracy")
++    if mode == "absolute":
++        quality["threshold"] = 90
++    else:
++        quality.pop("threshold")
++        quality["tolerance"] = 0.1
++    campaign["config"].write_text(json.dumps(config))
++    args = approved_start(campaign["start"], overrides={"protocol.quality_unit": "points"})
++    gate, _ = task_intake.campaign_gate(Path(args[-1]))
++    assert gate["brief_review"] == "approved"
++    assert gate["task_brief"]["quality_gate"] == expected
++    rendered = task_intake.render(gate)
++    assert expected in rendered
++    comparator = "at_least" if direction == "maximize" else "at_most"
++    assert f"protocol.quality_comparator: {comparator}" in rendered
++    assert f"protocol.quality_direction: {direction}" in rendered
++    if mode == "baseline_comparison":
++        assert "protocol.quality_baseline_tolerance: 0.1" in rendered
++        assert "protocol.quality_reference: retained baseline score" in rendered
++        assert "protocol.quality_limit:" not in rendered
++        assert "protocol.quality_limit" not in gate["task_brief"]["conditions"]
++        from inferrsi.apps.cli import intake_contract
++
++        summary = intake_contract.summary(task_intake.read_record(Path(args[-1])),
++                                          task_intake.load_spec("task-performance"))
++        assert "protocol.quality_limit" not in task_intake.render_summary(summary)
++    else:
++        assert "protocol.quality_limit: 90" in rendered
++        assert "protocol.quality_baseline_tolerance" not in rendered
++    assert project_service.quality_passed(config, good, reference=90)
++    assert not project_service.quality_passed(config, bad, reference=90)
 +
 +
-+def approved_record():
-+    record, view = ask(build(), spec_for())
-+    return intake.answer(record, spec_for(), question_id=view["task_brief"]["id"], value="approve")
++def test_old_absolute_wording_cannot_approve_a_relative_service_gate(campaign):
++    import hashlib
++
++    from inferrsi.apps.cli import task_intake
++    from tests.fixtures.campaign_intake import approved_start
++
++    config = settings()
++    config["quality"].pop("threshold")
++    config["quality"].update(mode="baseline_comparison", direction="minimize", tolerance=0.1)
++    campaign["config"].write_text(json.dumps(config))
++    args = approved_start(campaign["start"], overrides={"protocol.quality_unit": "points"})
++    path = Path(args[-1])
++    gate, record = task_intake.campaign_gate(path)
++    old_brief = dict(gate["task_brief"])
++    old_brief.pop("id")
++    old_brief["quality_gate"] = "quality <= 0.1 points"
++    old_fields = old_brief["conditions"]
++    old_fields["protocol.quality_limit"] = old_fields.pop("protocol.quality_baseline_tolerance")
++    for key in ("quality_reference", "quality_direction", "quality_mode"):
++        old_fields.pop("protocol." + key)
++    payload = json.dumps(old_brief, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
++    old_id = "q:task_brief:" + hashlib.sha256(payload.encode()).hexdigest()
++    record["brief_decision"]["question"] = old_id
++    task_intake.write_record(path, record)
++    assert main(args) == 2
++    reopened = json.loads(campaign["capsys"].readouterr().out)
++    assert reopened["brief_review"] == "awaiting_confirmation"
++    assert "baseline quality + 0.1 points" in reopened["task_brief"]["quality_gate"]
++    assert not campaign["root"].exists()
 +
 +
-+def test_complete_fields_require_separate_review_before_search():
-+    spec = spec_for()
-+    record, view = ask(build(), spec)
-+    assert view["brief_review"] == "awaiting_confirmation"
-+    brief = view["task_brief"]
-+    assert brief["performance_target"] == "p95_ttft <= 180 ms"
-+    assert brief["quality_gate"] == "token mismatches <= 0 tokens"
-+    assert brief["benchmark"] == ALL_VALUES["protocol.quality_benchmark"]
-+    assert brief["conditions"] == ALL_VALUES
-+    assert [q["id"] for q in view["questions"]] == [brief["id"]]
-+    assert not view["complete"] and view["needs_user_input"]
-+    assert view["allowed_next"] == ["read_only_preparation"]
-+    approved = intake.evaluate(approved_record(), spec)
-+    assert approved["complete"] and not approved["questions"]
-+    assert approved["brief_review"] == "approved"
-+    assert approved["allowed_next"] == ["read_only_preparation", "baseline_measurement",
-+                                       "candidate_search"]
-+    assert approved["execution"] == "not started"
++def test_legacy_relative_maximize_reopens_comparator_before_a_new_card(campaign):
++    from inferrsi.apps.cli import task_intake
++    from tests.fixtures.campaign_intake import approved_start
++
++    config = settings()
++    config["quality"].pop("threshold")
++    config["quality"].update(mode="baseline_comparison", tolerance=0.1)
++    campaign["config"].write_text(json.dumps(config))
++    args = approved_start(campaign["start"])
++    path = Path(args[-1])
++    record = task_intake.read_record(path)
++    record["fields"]["protocol.quality_comparator"]["value"] = "at_most"
++    task_intake.write_record(path, record)
++    assert main(args) == 2
++    gate = json.loads(campaign["capsys"].readouterr().out)
++    assert gate["task_brief"] is None
++    assert gate["questions"][0]["field"] == "protocol.quality_comparator"
++    assert not campaign["root"].exists()
 +
 +
-+def test_empty_record_asks_only_the_first_batch():
-+    spec = spec_for()
-+    view = intake.evaluate(intake.new_record("task-performance", record_id="intake-empty"), spec)
-+    asked = {question["field"] for question in view["questions"]}
-+    expected = batch_paths(spec, 1) - {"acceptance.min_improvement_pct"}
-+    assert asked == expected
-+    assert all(question["batch"] == 1 for question in view["questions"])
-+    assert view["complete"] is False
++def test_service_planning_brief_marks_quality_inputs_provisional(campaign):
++    from inferrsi.apps.cli import task_intake
++    from tests.fixtures.campaign_intake import approved_start
 +
-+
-+def test_second_batch_appears_once_the_first_is_settled():
-+    spec = spec_for()
-+    record = build(batch_paths(spec, 1))
-+    view = intake.evaluate(record, spec)
-+    asked = {question["field"] for question in view["questions"]}
-+    assert asked == batch_paths(spec, 2)
-+    assert all(question["batch"] == 2 for question in view["questions"])
-+
-+
-+def test_unknown_answer_blocks_its_stage_and_is_not_asked_again():
-+    spec = spec_for()
-+    record, view = ask(intake.new_record("task-performance", record_id="intake-unknown"), spec)
-+    question = next(item for item in view["questions"]
-+                    if item["field"] == "protocol.timing_boundary")
-+    record = intake.answer(record, spec, question_id=question["id"], unknown=True)
-+    view = intake.evaluate(record, spec)
-+    assert question["id"] not in {item["id"] for item in view["questions"]}
-+    baseline = next(item for item in view["blockers"]
-+                    if item["stage"] == "baseline_measurement")
-+    assert "protocol.timing_boundary" in {item["field"] for item in baseline["blocked_by"]}
-+    assert view["allowed_next"] == ["read_only_preparation"]
-+    assert record["fields"]["protocol.timing_boundary"] == {
-+        "value": None, "source": f"answer:{question['id']}",
-+        "status": "unknown", "asked": True,
-+    }
-+
-+
-+def test_stale_answer_after_a_dependency_change_is_rejected():
-+    spec = spec_for()
-+    record = build({"acceptance.metric_key", intake.REFERENCE})
-+    record, view = ask(record, spec)
-+    question = next(item for item in view["questions"]
-+                    if item["field"] == "acceptance.min_improvement_pct")
-+    changed = intake.set_fields(record, spec, {"acceptance.metric_key": "p99_ttft",
-+                                             intake.REFERENCE: ALL_VALUES[intake.REFERENCE]},
-+                                source="issue")
-+    with pytest.raises(intake.IntakeError) as error:
-+        intake.answer(changed, spec, question_id=question["id"], value=5)
-+    assert error.value.code == "stale_answer"
-+
-+
-+def test_duplicate_answer_is_rejected_once():
-+    spec = spec_for()
-+    record, view = ask(intake.new_record("task-performance", record_id="intake-dup"), spec)
-+    question = next(item for item in view["questions"]
-+                    if item["field"] == "acceptance.metric_key")
-+    record = intake.answer(record, spec, question_id=question["id"], value="p95_ttft")
-+    with pytest.raises(intake.IntakeError) as error:
-+        intake.answer(record, spec, question_id=question["id"], value="p95_ttft")
-+    assert error.value.code == "already_answered"
-+
-+
-+def test_acceptance_answer_from_a_card_stays_a_proposal():
-+    spec = spec_for()
-+    record, view = ask(intake.new_record("task-performance", record_id="intake-card"), spec)
-+    question = next(item for item in view["questions"]
-+                    if item["field"] == "acceptance.metric_key")
-+    record = intake.answer(record, spec, question_id=question["id"], value="p95_ttft")
-+    assert record["fields"]["acceptance.metric_key"]["status"] == "proposed"
-+    view = intake.evaluate(record, spec)
-+    search = next(item for item in view["blockers"] if item["stage"] == "candidate_search")
-+    assert "acceptance.metric_key" in {item["field"] for item in search["blocked_by"]}
-+    assert "candidate_search" not in view["allowed_next"]
-+    summary = intake.summary(record, spec)
-+    assert summary["proposed"]["acceptance.metric_key"] == "p95_ttft"
-+
-+
-+def test_acceptance_issue_confirms_a_previously_proposed_value():
-+    spec = spec_for()
-+    record = intake.new_record("task-performance", record_id="intake-upgrade")
-+    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p95_ttft"},
-+                               source="prompt")
-+    assert record["fields"]["acceptance.metric_key"]["status"] == "proposed"
-+    record = intake.set_fields(record, spec, {intake.REFERENCE: "accepted issue"}, source="prompt")
-+    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p95_ttft",
-+                                            intake.REFERENCE: "accepted issue"}, source="issue")
-+    assert record["fields"]["acceptance.metric_key"]["status"] == "confirmed"
-+
-+
-+def test_two_stated_values_become_a_question_with_both_options():
-+    spec = spec_for()
++    cfg = settings()
++    cfg["quality"].pop("threshold")
++    cfg["quality"].update(mode="baseline_comparison", tolerance=0.1)
++    campaign["config"].write_text(json.dumps(cfg))
++    args = approved_start(campaign["start"], overrides={"protocol.quality_unit": "points"})
++    path = Path(args[-1])
++    record = task_intake.read_record(path)
++    record.pop("campaign_launch")
++    record.pop("brief_decision")
++    task_intake.write_record(path, record)
++    planning, _ = task_intake.campaign_gate(path)
++    brief = planning["task_brief"]

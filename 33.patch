@@ -1,0 +1,119 @@
++def test_abba_quality_rejects_foreign_or_missing_corpus(project, capsys, reported):  # noqa: F811
++    from tests.apps.test_project_optimization import submit
++    from tests.fixtures.diagnosis import diagnosis_args
++
++    (project[1] / "quality.py").write_text(
++        "import json, sys\nfrom pathlib import Path\n"
++        "result = {'correct':True,'accuracy':100,'unit':'points','dataset':'fixture-exact-v1'}\n"
++        "if Path(sys.argv[1]).name == 'candidate':\n"
++        f"    result['dataset'] = {reported!r}\n"
++        "    if result['dataset'] is None: del result['dataset']\n"
++        "Path(sys.argv[2]).write_text(json.dumps(result))\n")
++    args = approved_start(start_arguments(project), overrides={
++        "protocol.quality_metric": "accuracy", "protocol.quality_limit": 95,
++        "protocol.quality_comparator": "at_least", "protocol.quality_unit": "points"})
++    assert cli.main(args) == 0
++    capsys.readouterr()
++    plan = json.loads((project[3] / "plan.json").read_bytes())
++    assert plan["evaluation_settings"]["quality_benchmark"] == "fixture-exact-v1"
++    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
++    capsys.readouterr()
++    code, result = submit(project, capsys, 20)
++    assessment = result["latest_observation"]["assessment"]
++    assert code == 2 and result["best"]["kind"] == "baseline"
++    assert (assessment["verdict"], assessment["reason"]) == (
++        "INCONCLUSIVE", "quality_benchmark_mismatch")
++
++
++@pytest.mark.parametrize(("score", "unit", "verdict"), [
++    (0.02, "fraction", "FAIL"), (0.005, "fraction", "PASS"),
++    (0.005, None, "INCONCLUSIVE"), (0.005, "tokens", "INCONCLUSIVE"),
++])
++def test_abba_scores_in_the_approved_quality_unit(project, capsys, score, unit, verdict):  # noqa: F811
++    from tests.apps.test_project_optimization import submit
++    from tests.fixtures.diagnosis import diagnosis_args
++
++    (project[1] / "quality.py").write_text(
++        "import json, sys\nfrom pathlib import Path\n"
++        "candidate = Path(sys.argv[1]).name == 'candidate'\n"
++        "result = {'correct': True, 'dataset': 'fixture-exact-v1', 'errors': 0.5, 'unit': '%'}\n"
++        f"if candidate: result.update(errors={score!r}, unit={unit!r})\n"
++        "if result['unit'] is None: del result['unit']\n"
++        "Path(sys.argv[2]).write_text(json.dumps(result))\n")
++    args = approved_start(start_arguments(project), overrides={
++        "protocol.quality_metric": "errors", "protocol.quality_limit": 1,
++        "protocol.quality_comparator": "at_most", "protocol.quality_unit": "%"})
++    assert cli.main(args) == 0
++    capsys.readouterr()
++    frozen = json.loads((project[3] / "plan.json").read_bytes())["evaluation_settings"]
++    gate, _ = task_intake.campaign_gate(Path(args[-1]))
++    approved = gate["task_brief"]["campaign_launch"]["evaluation_settings"]["quality_bound"]
++    assert approved == frozen["quality_bound"]
++    assert approved == {"metric": "errors", "limit": 1, "comparator": "at_most", "unit": "%"}
++    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
++    capsys.readouterr()
++    _, result = submit(project, capsys, 20)
++    assessment = result["latest_observation"]["assessment"]
++    assert assessment["verdict"] == verdict
++    if verdict == "PASS":
++        assert cli.main(["campaign", "final", "--directory", str(project[3]),
++                         "--reason", "independent retest"]) == 0
++        capsys.readouterr()
++        final = json.loads((project[3] / "state.json").read_bytes())["final"]["assessment"]
++        assert final["verdict"] == "PASS"
++    else:
++        assert result["best"]["kind"] == "baseline"
++        if verdict == "INCONCLUSIVE":
++            assert assessment["reason"] == "quality_unit_mismatch"
++
++
++def test_reissued_field_rejects_delayed_reply_and_keeps_unaffected_sibling(tmp_path, capsys):
++    path = tmp_path / "intake.json"
++    base = ["task", "intake"]
++    record = ["--record", str(path), "--json"]
++    metric = "acceptance.metric_key"
++    gain = "acceptance.min_improvement_pct"
++    sibling = "protocol.timing_boundary"
++    assert cli.main([*base, "evaluate", *record, "--task", "task-performance",
++                     "--set", "acceptance.reference=fixture", "--set", f"{metric}=p95"]) == 0
++    capsys.readouterr()
++    original = task_intake.read_record(path)
++    assert cli.main([*base, "evaluate", *record, "--source", "issue",
++                     "--set", "acceptance.reference=fixture", "--set", f"{metric}=p99"]) == 0
++    capsys.readouterr()
++    current = task_intake.read_record(path)
++    assert card_id(original, gain) != card_id(current, gain)
++    assert card_id(original, sibling) == card_id(current, sibling)
++    before = path.read_bytes()
++    for stale in (card_id(original, gain), f"q:{gain}"):
++        assert cli.main([*base, "answer", *record, "--question", stale, "--value", "5"]) == 2
++        assert json.loads(capsys.readouterr().out)["error"] == "stale_answer"
++        assert path.read_bytes() == before
++    assert cli.main([*base, "answer", *record, "--question", card_id(original, sibling),
++                     "--value", "end-to-end"]) == 0
++    capsys.readouterr()
++    assert cli.main([*base, "answer", *record, "--question", card_id(current, gain),
++                     "--value", "5"]) == 0
++    assert json.loads(capsys.readouterr().out)["fields"][gain]["value"] == 5
++
++
++def test_issued_field_token_binds_record_and_conflict_options():
++    spec = spec_for()
++    key = "optimization.objective"
++    record = intake.new_record("task-performance", record_id="first")
++    for value in ("throughput", "latency"):
++        record = intake.set_fields(record, spec, {key: value}, source="prompt")
++    record, _ = ask(record, spec)
++    original = card_id(record, key)
++    for updated in ({**record, "record_id": "second"},
++                    intake.set_fields(record, spec, {key: "memory"}, source="prompt")):
++        updated, _ = ask(updated, spec)
++        assert card_id(updated, key) != original
++        with pytest.raises(intake.IntakeError) as rejected:
++            intake.answer(updated, spec, question_id=original, value="latency")
++        assert rejected.value.code == "stale_answer"
++        chosen = intake.answer(updated, spec, question_id=card_id(updated, key), value="latency")
++        assert chosen["fields"][key]["status"] == "confirmed"
++
++
++def test_legacy_open_token_must_be_reissued_but_settled_answers_keep_provenance():

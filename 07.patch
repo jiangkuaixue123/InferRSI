@@ -1,3 +1,83 @@
++    evaluate.add_argument("--source", default="prompt",
++                          help="Where --set values came from (prompt, issue, task_file, ...)")
++    evaluate.add_argument("--frozen", type=Path,
++                          help="Compare a gate task file; import its stated values when the user "
++                               "selects this file as the acceptance reference")
++    evaluate.add_argument("--json", action="store_true")
++    answer = intake_actions.add_parser(
++        "answer", help="Record one answer to an open question and re-evaluate")
++    answer.add_argument("--record", type=Path, required=True)
++    answer.add_argument("--question", required=True, help="Question id from evaluate")
++    choice = answer.add_mutually_exclusive_group(required=True)
++    choice.add_argument("--value", help="Chosen option value or free-form text")
++    choice.add_argument("--unknown", action="store_true",
++                        help="Record as unknown; dependent stages stay blocked")
++    answer.add_argument("--frozen", type=Path)
++    answer.add_argument("--json", action="store_true")
++    summary = intake_actions.add_parser(
++        "summary", help="Readable confirmation summary with sources and next steps")
++    summary.add_argument("--record", type=Path, required=True)
++    summary.add_argument("--frozen", type=Path)
++    summary.add_argument("--json", action="store_true")
+ 
+     for name in ("status", "report"):
+         child = commands.add_parser(
+diff --git a/src/inferrsi/apps/cli/campaign_intake.py b/src/inferrsi/apps/cli/campaign_intake.py
+new file mode 100644
+index 000000000..7c1183b8a
+--- /dev/null
++++ b/src/inferrsi/apps/cli/campaign_intake.py
+@@ -0,0 +1,180 @@
++"""Bind the user's final brief to the same frozen inputs used by campaign start."""
++
++import copy
++import shlex
++import shutil
++import tempfile
++from pathlib import Path
++
++from ...harness import candidates, optimization, project_service
++from ..storage.artifacts import file_lock
++from . import task_intake
++
++
++def _blocked(reason, **details):
++    return {"status": "blocked", "execution": "not started", "reason": reason, **details}
++
++
++def _execution(plan, args, staged):
++    launch = {
++        key: value
++        for key, value in plan.items()
++        if key not in ("runtime_identity", "runtime_version")
++    }
++    launch.update(
++        protocol=str(args.protocol.resolve()), instructions=str(args.instructions.resolve())
++    )
++    settings = plan["evaluation_settings"]
++    fields = {
++        "optimization.repository": plan["working_candidate"],
++        "protocol.comparison": args.evaluation_mode,
++        "environment.max_minutes": plan["max_seconds"] / 60,
++        "environment.rounds": plan["round_limit"],
++        "protocol.quality_failure_policy": "revert_candidate",
++    }
++    if args.evaluation_mode == "service_reuse":
++        primary = next(obj for obj in settings["objectives"] if obj["id"] == settings["ranking"][0])
++        quality = settings["quality"]
++        comparison = "at_least" if quality["direction"] == "maximize" else "at_most"
++        relative = quality["mode"] == "baseline_comparison"
++        fields.update(
++            {
++                "acceptance.baseline_revision": plan["baseline_revision"],
++                "acceptance.metric_key": primary["key"],
++                "acceptance.metric_unit": primary["unit"],
++                "acceptance.direction": primary["direction"],
++                "protocol.quality_metric": quality["key"],
++                "protocol.quality_unit": quality["unit"],
++                "protocol.quality_benchmark": quality["dataset"],
++                "protocol.quality_comparator": comparison,
++                "protocol.quality_limit": quality["tolerance" if relative else "threshold"],
 +                "protocol.timing_boundary": settings["conditions"]["timing_scope"],
 +                "optimization.workload": settings["conditions"]["workload"],
 +                "optimization.model": settings["conditions"]["model"],
@@ -54,77 +134,3 @@
 +                actual = project_service.revision(args.repo, args.include)
 +        if approved != actual:
 +            conflicts.append({"field": key, "approved": approved, "actual": actual})
-+    return conflicts
-+
-+
-+def start(args, run_session):
-+    if args.intake is None:
-+        return _blocked(
-+            "missing_intake", message="Supply --intake with an approved performance brief."
-+        )
-+    path = args.intake.resolve()
-+    if not path.is_file():
-+        return _blocked("missing_intake", message="Collect task intake before campaign start.")
-+    destination = args.session.resolve()
-+    if destination.exists() or any(
-+        destination.is_relative_to(p.resolve()) for p in (args.repo, args.protocol)
-+    ):
-+        raise ValueError("Use a new campaign directory outside project/protocol")
-+    try:
-+        with file_lock(path.with_name(path.name + ".lock")):
-+            gate, record = task_intake.campaign_gate(path)
-+            if not gate["task_brief"] or (not args.prepare_intake and not gate["complete"]):
-+                return gate
-+            if not args.prepare_intake and "campaign_launch" not in record:
-+                return _blocked(
-+                    "unbound_brief", message="Use --prepare-intake and review the executable brief."
-+                )
-+            with tempfile.TemporaryDirectory(prefix="inferrsi-intake-") as tmp:
-+                staged_args = copy.copy(args)
-+                staged_args.session = Path(tmp) / "campaign"
-+                frozen = run_session(staged_args, initialize=lambda _, plan: {"plan": plan})
-+                plan = frozen["plan"]
-+                launch, expected = _execution(plan, args, staged_args.session)
-+                brief = gate["task_brief"]
-+                conflicts = _conflicts(brief["conditions"], expected, args)
-+                if conflicts:
-+                    return _blocked("launch_conflict", conflicts=conflicts)
-+                if args.prepare_intake:
-+                    return task_intake.prepare_launch(path, record, launch)
-+                if launch != brief["campaign_launch"]:
-+                    return _blocked("launch_changed",
-+                                    message="Prepare and review the changed launch.")
-+                result = _initialize(staged_args.session, destination, plan, record, gate)
-+                return {**result, "instructions": frozen["instructions"]}
-+    except BlockingIOError:
-+        return _blocked("record_busy", message="Retry when the intake update finishes.")
-+
-+
-+def _initialize(staged, destination, plan, record, gate):
-+    conditions = gate["task_brief"]["conditions"]
-+    plan["performance_target"] = {
-+        name: conditions["protocol." + name] for name in ("target_kind", "target_value")
-+    }
-+    if plan.get("evaluation_mode") == "service_reuse":
-+        settings = plan["evaluation_settings"]
-+        primary = next(obj for obj in settings["objectives"] if obj["id"] == settings["ranking"][0])
-+        if primary["threshold_type"] != "relative_percent":
-+            plan["candidate_min_improvement_pct"] = conditions["acceptance.min_improvement_pct"]
-+    else:
-+        plan["evaluation_settings"]["quality_bound"] = {
-+            name: conditions["protocol.quality_" + name]
-+            for name in ("metric", "comparator", "limit")
-+        }
-+    receipt = task_intake.attach_record(staged, record, gate)["intake"]
-+    relative = "plan/intake-" + receipt["sha256"] + ".json"
-+    task_intake.write_record(staged / relative, receipt)
-+    plan["intake_receipt"] = relative
-+    destination.mkdir(parents=True, exist_ok=False)
-+    try:
-+        for path in staged.iterdir():
-+            shutil.move(str(path), destination / path.name)
-+        result = optimization.initialize(destination, plan)
-+    except BaseException:
-+        shutil.rmtree(destination)
-+        raise
-+    return {**result, "intake": receipt}

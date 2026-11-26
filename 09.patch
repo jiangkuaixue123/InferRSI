@@ -1,3 +1,80 @@
++    if not isinstance(spec, dict):
++        return [{"field": "$", "message": "must be an object"}]
++    if spec.get("schema_version") != SCHEMA_VERSION:
++        bad("schema_version", f"must be {SCHEMA_VERSION}")
++    if not isinstance(spec.get("task"), str) or not spec["task"].strip():
++        bad("task", "must be a non-empty string")
++    fields = spec.get("fields")
++    if not isinstance(fields, list) or not fields:
++        bad("fields", "must be a non-empty array")
++        return problems
++    seen: set[str] = set()
++    for index, field in enumerate(fields):
++        where = f"fields[{index}]"
++        if not isinstance(field, dict):
++            bad(where, "must be an object")
++            continue
++        path = field.get("path")
++        if not isinstance(path, str) or not path.strip():
++            bad(f"{where}.path", "must be a non-empty string")
++        elif path in seen:
++            bad(f"{where}.path", f"duplicates {path}")
++        else:
++            seen.add(path)
++        if field.get("maps_to") not in MAP_TARGETS:
++            bad(f"{where}.maps_to", f"must be one of {', '.join(MAP_TARGETS)}")
++        if (field.get("maps_to") == "task-input/v1" and field.get("type") in ("integer", "number")
++                and isinstance(path, str) and path not in task_input.BY_PATH):
++            bad(f"{where}.path", f"{path} is not a task-input/v1 field")
++        if not isinstance(field.get("question"), str) or not field["question"].strip():
++            bad(f"{where}.question", "must be a non-empty string")
++        batch = field.get("batch", 1)
++        if type(batch) is not int or batch < 1:
++            bad(f"{where}.batch", "must be a positive integer")
++        required = field.get("required_before", [])
++        if not isinstance(required, list) or any(
++            stage not in BLOCKING_STAGES for stage in required
++        ):
++            bad(f"{where}.required_before",
++                f"must list stages from {', '.join(BLOCKING_STAGES)}")
++        depends = field.get("depends_on", [])
++        if not isinstance(depends, list) or any(not isinstance(dep, str) for dep in depends):
++            bad(f"{where}.depends_on", "must be an array of field paths")
++        options = field.get("options", [])
++        if not isinstance(options, list) or any(
++            not isinstance(option, dict) or "value" not in option for option in options
++        ):
++            bad(f"{where}.options", "must be an array of {value, hint} objects")
++        if "user_choice" in field and type(field["user_choice"]) is not bool:
++            bad(f"{where}.user_choice", "must be a boolean")
++        when = field.get("required_when")
++        if when is not None and (
++            not isinstance(when, dict) or not isinstance(when.get("field"), str)
++            or "equals" not in when
++        ):
++            bad(f"{where}.required_when", "must be {field, equals}")
++    for field in fields:
++        if not isinstance(field, dict):
++            continue
++        when = field.get("required_when")
++        if isinstance(when, dict) and when.get("field") not in seen:
++            bad(f"{field.get('path', '?')}.required_when",
++                f"names unknown field {when.get('field')}")
++        for dep in field.get("depends_on", []) if isinstance(field.get("depends_on"), list) else ():
++            if dep not in seen:
++                bad(f"{field.get('path', '?')}.depends_on", f"names unknown field {dep}")
++    return problems
++
++
++def load_spec(spec: object) -> dict:
++    """Validate and return the spec; raise ``IntakeError('invalid_spec')``."""
++    problems = validate_spec(spec)
++    if problems:
++        first = problems[0]
++        raise IntakeError("invalid_spec", f"{first['field']}: {first['message']}")
++    return spec
++
++
 +def new_record(task: str, *, record_id: str, primary_source: str = "prompt") -> dict:
 +    """An empty intake record for ``task`` with a confirmed primary task."""
 +    return {
@@ -32,6 +109,8 @@
 +    revision = record.get("revision")
 +    if type(revision) is not int or revision < 1:
 +        bad("revision", "must be a positive integer")
++    if not isinstance(record.get("open_questions", []), list):
++        bad("open_questions", "must be a list of issued questions")
 +    primary = record.get("primary_task")
 +    if not isinstance(primary, dict) or primary.get("status") not in STATUSES:
 +        bad("primary_task", "must carry a value, source and known status")
@@ -57,103 +136,3 @@
 +            continue
 +        if entry.get("status") not in STATUSES:
 +            bad(path, f"status must be one of {', '.join(STATUSES)}")
-+        if not isinstance(entry.get("source"), str):
-+            bad(path, "source must be a string")
-+        if entry.get("status") in SETTLED:
-+            try:
-+                _typed_value(known[path], entry.get("value"))
-+            except IntakeError as exc:
-+                bad(path, str(exc))
-+        if type(entry.get("asked", False)) is not bool:
-+            bad(path, "asked must be a boolean")
-+    return problems
-+
-+
-+def _check(record: dict, spec: dict) -> None:
-+    problems = validate_record(record, spec)
-+    if problems:
-+        first = problems[0]
-+        raise IntakeError("invalid_record", f"{first['field']}: {first['message']}")
-+
-+
-+def _entry(record: dict, path: str) -> dict:
-+    return record["fields"].get(path) or {"value": None, "source": "unknown",
-+                                          "status": "unknown", "asked": False}
-+
-+
-+def _settled(record: dict, path: str) -> bool:
-+    return _entry(record, path).get("status") in SETTLED
-+
-+
-+def _typed_value(field: dict, value: object) -> object:
-+    kind = field.get("type", "text")
-+    if kind == "number":
-+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-+            raise IntakeError("invalid_value", f"{field['path']} must be a finite number")
-+        try:
-+            number = float(value)
-+        except (OverflowError, ValueError) as exc:
-+            raise IntakeError("invalid_value", f"{field['path']} must be a finite number") from exc
-+        if not math.isfinite(number):
-+            raise IntakeError("invalid_value", f"{field['path']} must be a finite number")
-+        return number
-+    if kind == "integer":
-+        if type(value) is int:
-+            return value
-+        if isinstance(value, str):
-+            try:
-+                return int(value)
-+            except ValueError:
-+                pass
-+        raise IntakeError("invalid_value", f"{field['path']} must be an integer")
-+    if kind == "choice":
-+        allowed = [option["value"] for option in field.get("options", [])]
-+        if value not in allowed:
-+            raise IntakeError(
-+                "invalid_value", f"{field['path']} must be one of {', '.join(allowed)}")
-+        return value
-+    if not isinstance(value, str) or not value.strip():
-+        raise IntakeError("invalid_value", f"{field['path']} must be a non-empty string")
-+    return value
-+
-+
-+def _coerce(field: dict, value: object) -> object:
-+    typed = _typed_value(field, value)
-+    if field["maps_to"] == "task-input/v1" and field.get("type") in ("integer", "number"):
-+        mapped = task_input.BY_PATH[field["path"]]
-+        problem = task_input.field_value_problem(mapped, typed)
-+        if problem:
-+            raise IntakeError("invalid_value", f"{mapped.path} {problem}")
-+    return typed
-+
-+
-+def _user_source(path: str, source: str) -> bool:
-+    return source in ("prompt", "grilling_brief") or source == f"answer:{_QUESTION}{path}"
-+
-+
-+def selected_reference(record: dict) -> str | None:
-+    entry = _entry(record, REFERENCE)
-+    if entry["status"] == "confirmed" and _user_source(REFERENCE, entry.get("source", "")):
-+        return entry["value"]
-+    return None
-+
-+
-+def _status_for(field: dict, source: str, *, bound: bool = False) -> str:
-+    path = field["path"]
-+    from_user = _user_source(path, source)
-+    if path == REFERENCE:
-+        return "confirmed" if from_user else "assumed"
-+    if path.startswith(ACCEPTANCE):
-+        if bound:
-+            return "confirmed"
-+        return "proposed" if from_user else "assumed"
-+    if field.get("user_choice") and not from_user:
-+        return "assumed"
-+    return "confirmed"
-+
-+
-+def _bound_value(record: dict, path: str, entry: dict) -> bool:
-+    reference = selected_reference(record)
-+    if not reference or entry.get("authority_reference") != reference:
-+        return False
-+    snapshot = record.get("selected_gate")

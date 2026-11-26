@@ -1,3 +1,77 @@
++the top-level `dataset` field. Harness checks the reported label against the
++approved identity. Include the score's `unit` on numeric quality receipts for
++both AB/BA and service reuse. Show the approved score scale and, for a service
++baseline tolerance on percent scores, the allowed difference in percentage points.
+ This command uses the same Harness controller as the packaged task path below.
+ 
+ Edit the returned working candidate. Submit each hypothesis and candidate with
+diff --git a/src/inferrsi/apps/cli/__init__.py b/src/inferrsi/apps/cli/__init__.py
+index c76418009..bea5d8991 100644
+--- a/src/inferrsi/apps/cli/__init__.py
++++ b/src/inferrsi/apps/cli/__init__.py
+@@ -32,7 +32,7 @@ def _round_provider(plan):
+     return round_provider(plan)
+ 
+ 
+-def _optimization_session(args, *, task_source=None, report_metadata=None):
++def _optimization_session(args, *, task_source=None, report_metadata=None, initialize=None):
+     from ...harness.optimization_session import session_command
+     from ...knowledge.ranking_policy import managed_ranking_policy
+ 
+@@ -51,7 +51,7 @@ def _optimization_session(args, *, task_source=None, report_metadata=None):
+         knowledge_reader=KnowledgeReader() if args.session_action == "knowledge" else None,
+         external_knowledge=settings, external_project=external_project,
+         external_provider_for=_round_provider,
+-        report_metadata=report_metadata,
++        report_metadata=report_metadata, initialize=initialize,
+     )
+ 
+ 
+@@ -345,9 +345,17 @@ def _context(records: list[dict]) -> str:
+ 
+ 
+ def _task_command(args) -> int:
+-    """Read one task file and print to stdout; no subprocess, probe or file write."""
++    """Read one task file and print to stdout; no subprocess, probe or file write.
++
++    ``task intake evaluate`` and ``answer`` are the exception: they also write the
++    caller-named ``--record`` file. They start no subprocess or probe either.
++    """
+     from . import task_input
+ 
++    if args.task_action == "intake":
++        from .task_intake import command as intake_command
++
++        return intake_command(args)
+     if args.task_action in ("schema", "template"):
+         text = (task_input.schema_text() if args.task_action == "schema"
+                 else task_input.template_text())
+@@ -862,7 +870,15 @@ def main(argv: list[str] | None = None) -> int:
+             if getattr(args, "session_action", None) is not None:
+                 from ..delivery import after_final
+ 
+-                result = _optimization_session(args)
++                if args.session_action == "start" and getattr(args, "project_task", False):
++                    from .campaign_intake import start
++
++                    result = start(args, _optimization_session)
++                    if result.get("execution") == "not started":
++                        _print(result)
++                        return 2 if result.get("status") == "blocked" else 0
++                else:
++                    result = _optimization_session(args)
+                 _print(after_final(args, result))
+                 if "exit_code" in result:
+                     return result["exit_code"]
+diff --git a/src/inferrsi/apps/cli/arguments.py b/src/inferrsi/apps/cli/arguments.py
+index c6c241b2f..03896bdfd 100644
+--- a/src/inferrsi/apps/cli/arguments.py
++++ b/src/inferrsi/apps/cli/arguments.py
+@@ -183,6 +183,11 @@ def _optimization_actions(stages, *, project=False):
+                            help="AB/BA (default), or one owned service per retained attempt")
+         start.add_argument("--evaluation-config", type=Path,
+                            help="Explicit service-reuse JSON protocol (required in that mode)")
++        start.add_argument("--intake", type=Path,
 +                           help="intake/v1 record; the campaign refuses to start until it is "
 +                                "complete for the performance task")
 +        start.add_argument("--prepare-intake", action="store_true",
@@ -39,82 +113,3 @@
 +    evaluate.add_argument("--record", type=Path, required=True, help="intake/v1 record file")
 +    evaluate.add_argument("--set", action="append", default=[], metavar="PATH=VALUE",
 +                          help="Fields the request already states; repeatable")
-+    evaluate.add_argument("--source", default="prompt",
-+                          help="Where --set values came from (prompt, issue, task_file, ...)")
-+    evaluate.add_argument("--frozen", type=Path,
-+                          help="Compare a gate task file; import its stated values when the user "
-+                               "selects this file as the acceptance reference")
-+    evaluate.add_argument("--json", action="store_true")
-+    answer = intake_actions.add_parser(
-+        "answer", help="Record one answer to an open question and re-evaluate")
-+    answer.add_argument("--record", type=Path, required=True)
-+    answer.add_argument("--question", required=True, help="Question id from evaluate")
-+    choice = answer.add_mutually_exclusive_group(required=True)
-+    choice.add_argument("--value", help="Chosen option value or free-form text")
-+    choice.add_argument("--unknown", action="store_true",
-+                        help="Record as unknown; dependent stages stay blocked")
-+    answer.add_argument("--frozen", type=Path)
-+    answer.add_argument("--json", action="store_true")
-+    summary = intake_actions.add_parser(
-+        "summary", help="Readable confirmation summary with sources and next steps")
-+    summary.add_argument("--record", type=Path, required=True)
-+    summary.add_argument("--frozen", type=Path)
-+    summary.add_argument("--json", action="store_true")
- 
-     for name in ("status", "report"):
-         child = commands.add_parser(
-diff --git a/src/inferrsi/apps/cli/campaign_intake.py b/src/inferrsi/apps/cli/campaign_intake.py
-new file mode 100644
-index 000000000..7cdf7b957
---- /dev/null
-+++ b/src/inferrsi/apps/cli/campaign_intake.py
-@@ -0,0 +1,179 @@
-+"""Bind the user's final brief to the same frozen inputs used by campaign start."""
-+
-+import copy
-+import shlex
-+import shutil
-+import tempfile
-+from pathlib import Path
-+
-+from ...harness import candidates, optimization, project_service
-+from ..storage.artifacts import file_lock
-+from . import task_intake
-+
-+
-+def _blocked(reason, **details):
-+    return {"status": "blocked", "execution": "not started", "reason": reason, **details}
-+
-+
-+def _execution(plan, args, staged):
-+    launch = {
-+        key: value
-+        for key, value in plan.items()
-+        if key not in ("runtime_identity", "runtime_version")
-+    }
-+    launch.update(
-+        protocol=str(args.protocol.resolve()), instructions=str(args.instructions.resolve())
-+    )
-+    settings = plan["evaluation_settings"]
-+    fields = {
-+        "optimization.repository": plan["working_candidate"],
-+        "protocol.comparison": args.evaluation_mode,
-+        "environment.max_minutes": plan["max_seconds"] / 60,
-+        "environment.rounds": plan["round_limit"],
-+        "protocol.quality_failure_policy": "revert_candidate",
-+    }
-+    if args.evaluation_mode == "service_reuse":
-+        primary = next(obj for obj in settings["objectives"] if obj["id"] == settings["ranking"][0])
-+        quality = settings["quality"]
-+        comparison = "at_least" if quality["direction"] == "maximize" else "at_most"
-+        relative = quality["mode"] == "baseline_comparison"
-+        fields.update(
-+            {
-+                "acceptance.baseline_revision": plan["baseline_revision"],
-+                "acceptance.metric_key": primary["key"],
-+                "acceptance.metric_unit": primary["unit"],
-+                "acceptance.direction": primary["direction"],
-+                "protocol.quality_metric": quality["key"],
-+                "protocol.quality_benchmark": quality["dataset"],
-+                "protocol.quality_comparator": comparison,
-+                "protocol.quality_limit": quality["tolerance" if relative else "threshold"],

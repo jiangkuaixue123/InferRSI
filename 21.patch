@@ -1,147 +1,185 @@
-+      "path": "optimization.workload",
++    {
++      "path": "optimization.objective",
 +      "user_choice": true,
 +      "maps_to": "task-input/v1",
-+      "batch": 2,
++      "batch": 1,
 +      "type": "text",
-+      "question": "Which fixed workload, input set and concurrency replay for every trial?",
-+      "required_before": ["baseline_measurement"]
++      "question": "Which outcome decides this round?",
++      "required_before": ["baseline_measurement", "candidate_search"]
 +    },
 +    {
-+      "path": "environment.baseline_command",
++      "path": "acceptance.metric_key",
 +      "maps_to": "task-input/v1",
-+      "batch": 2,
++      "batch": 1,
 +      "type": "text",
-+      "question": "Which command runs the unchanged baseline?",
-+      "required_before": ["baseline_measurement"]
-+    },
-+    {
-+      "path": "environment.repetitions",
-+      "user_choice": true,
-+      "maps_to": "task-input/v1",
-+      "batch": 2,
-+      "type": "integer",
-+      "question": "How many repetitions and warmups should each side run?",
-+      "required_before": ["baseline_measurement"]
-+    },
-+    {
-+      "path": "environment.max_minutes",
-+      "user_choice": true,
-+      "maps_to": "task-input/v1",
-+      "batch": 2,
-+      "type": "number",
-+      "question": "What time budget bounds the whole round?",
-+      "required_before": ["baseline_measurement"]
-+    },
-+    {
-+      "path": "protocol.comparison",
-+      "user_choice": true,
-+      "maps_to": "campaign-protocol",
-+      "batch": 3,
-+      "type": "choice",
-+      "question": "How should baseline and candidate trials be compared?",
++      "question": "Which metric decides this round?",
 +      "options": [
-+        {"value": "abba", "hint": "alternate unchanged baseline and candidate under the same conditions"},
-+        {"value": "service_reuse", "hint": "keep one owned service and reuse it across retained candidates"}
++        {"value": "p95_ttft", "hint": "client-observed p95 time to first token"},
++        {"value": "throughput", "hint": "requests completed per second under the fixed load"},
++        {"value": "p95_tpot", "hint": "p95 time per output token"},
++        {"value": "peak_memory", "hint": "peak device memory under the fixed load"}
++      ],
++      "required_before": ["baseline_measurement", "candidate_search"]
++    },
++    {
++      "path": "acceptance.metric_unit",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which unit does the metric use?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.direction",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "choice",
++      "question": "Should the metric go down or up?",
++      "options": [
++        {"value": "minimize", "hint": "lower is better"},
++        {"value": "maximize", "hint": "higher is better"}
 +      ],
 +      "required_before": ["candidate_search"]
 +    },
 +    {
-+      "path": "protocol.service_lifecycle",
++      "path": "acceptance.min_improvement_pct",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "number",
++      "question": "What minimum improvement is required to keep a candidate?",
++      "depends_on": ["acceptance.metric_key"],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.reference",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which acceptance issue or frozen plan states the gate?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.baseline_revision",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which baseline revision is pinned for this round?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.target_kind",
 +      "user_choice": true,
 +      "maps_to": "summary-only",
-+      "batch": 3,
-+      "type": "text",
-+      "question": "When is the reused service restarted, and which caches or state are cleared between candidates?",
-+      "depends_on": ["protocol.comparison"],
-+      "required_when": {"field": "protocol.comparison", "equals": "service_reuse"},
++      "batch": 1,
++      "type": "choice",
++      "question": "Is the final performance target an absolute metric bound or a percentage improvement over the pinned baseline?",
++      "options": [{"value": "absolute"}, {"value": "relative_improvement_pct"}],
 +      "required_before": ["candidate_search"]
 +    },
 +    {
-+      "path": "environment.candidate_command",
-+      "maps_to": "task-input/v1",
-+      "batch": 3,
-+      "type": "text",
-+      "question": "Which command runs a submitted candidate under the same conditions?",
++      "path": "protocol.target_value",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "number",
++      "question": "What numeric target must the final result reach, in the metric unit for an absolute bound or percent for a relative gain?",
 +      "required_before": ["candidate_search"]
 +    },
 +    {
-+      "path": "optimization.plane",
++      "path": "protocol.quality_benchmark",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "Which fixed accuracy benchmark, version or split, reference and input set decide quality?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_metric",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "Which accuracy metric or baseline-relative quality difference is scored?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_comparator",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "choice",
++      "question": "Which comparison must the accuracy result satisfy?",
++      "options": [{"value": "at_least"}, {"value": "at_most"}, {"value": "equal"}],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_limit",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "number",
++      "question": "What numeric accuracy threshold or maximum regression is acceptable?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_unit",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "In what units is the accuracy threshold expressed?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "environment.quality_command",
 +      "user_choice": true,
 +      "maps_to": "task-input/v1",
-+      "batch": 3,
++      "batch": 1,
++      "type": "text",
++      "question": "Which command checks output quality on a candidate?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_failure_policy",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
 +      "type": "choice",
-+      "question": "Which SIAS plane may this round change?",
++      "question": "What happens when a candidate fails the quality check?",
 +      "options": [
-+        {"value": "harness", "hint": "scheduling, batching, serving policy or harness code"},
-+        {"value": "model", "hint": "model execution, kernels or precision"},
-+        {"value": "infra", "hint": "runtime, drivers or device placement"}
++        {"value": "revert_candidate", "hint": "discard the candidate and keep the incumbent"},
++        {"value": "keep_with_flag", "hint": "retain the candidate but flag the quality gap"}
 +      ],
 +      "required_before": ["candidate_search"]
 +    },
 +    {
-+      "path": "environment.rounds",
++      "path": "protocol.timing_boundary",
 +      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "Where is the timing boundary, and does it include queueing or transfer?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.repository",
 +      "maps_to": "task-input/v1",
-+      "batch": 3,
-+      "type": "integer",
-+      "question": "How many candidate rounds may search run, and how much time is reserved for the final?",
-+      "required_before": ["candidate_search"]
-+    }
-+  ]
-+}
-diff --git a/tests/apps/test_engineering_benchmark_plugins.py b/tests/apps/test_engineering_benchmark_plugins.py
-index b1eadd835..c0c748fa5 100644
---- a/tests/apps/test_engineering_benchmark_plugins.py
-+++ b/tests/apps/test_engineering_benchmark_plugins.py
-@@ -5,6 +5,7 @@
- from tests.apps.test_codex_plugin import distribution as distribution
- from tests.apps.test_codex_plugin import invoke
- from tests.apps.test_project_optimization import project as project
-+from tests.fixtures.campaign_intake import approved_start
- from tests.fixtures.diagnosis import diagnosis_args
- 
- 
-@@ -67,15 +68,17 @@ def test_current_agent_session_uses_bundled_task_and_enforces_rounds(distributio
- def test_isolated_plugin_runs_project_round_and_retained_final(distribution, tmp_path, project):
-     repo, protocol, instructions, root = project
-     started = invoke(
--        distribution, tmp_path, "campaign", "start", "--directory", str(root),
-+        distribution, tmp_path, *approved_start(["campaign", "start", "--directory", str(root),
-         "--repo", str(repo), "--include", "engine.py", "--include", "config.json",
-         "--protocol", str(protocol), "--instructions", str(instructions),
-         "--measure-command", '"{python}" "{protocol}/measure.py" "{candidate}" "{result}"',
-         "--quality-command", '"{python}" "{protocol}/quality.py" "{candidate}" "{result}"',
-         "--metric-key", "metric", "--metric-unit", "synthetic-units", "--direction", "maximize",
--        "--quality-key", "correct", "--scope", "synthetic-software-control",
-+        "--quality-benchmark", "fixture-exact-v1", "--quality-key", "correct",
-+        "--scope", "synthetic-software-control",
-         "--min-improvement-pct", "1", "--warmups", "0", "--repetitions", "1",
-         "--rounds", "1", "--max-minutes", "5", "--evaluation-timeout-seconds", "30",
-+        "--python", "python3"]),
-     )
-     assert started.returncode == 0, started.stderr
-     diagnosed = invoke(distribution, tmp_path, *diagnosis_args(root, "campaign"))
-diff --git a/tests/apps/test_project_explanation.py b/tests/apps/test_project_explanation.py
-index d3a46329c..aa86a038b 100644
---- a/tests/apps/test_project_explanation.py
-+++ b/tests/apps/test_project_explanation.py
-@@ -11,6 +11,7 @@
- from inferrsi.apps.views.optimization_chart import render_result
- from inferrsi.harness.artifact_primitives import digest
- from inferrsi.harness.optimization import read_records
-+from tests.fixtures.campaign_intake import approved_start
- from tests.fixtures.diagnosis import diagnosis_args
- 
- # Device-wide factor applied to every timed value of one measurement call, cycling per
-@@ -46,7 +47,8 @@ def project(tmp_path):
-     (protocol / "quality.py").write_text(
-         "import json, runpy, sys\nfrom pathlib import Path\n"
-         "compute = runpy.run_path(str(Path(sys.argv[1])/'engine.py'))['compute']\n"
--        "Path(sys.argv[2]).write_text(json.dumps({'correct':compute(16)==32}))\n",
-+        "result = {'correct':compute(16)==32,'dataset':'fixture-exact-v1'}\n"
-+        "Path(sys.argv[2]).write_text(json.dumps(result))\n",
-         encoding="utf-8",
-     )
-     instructions = tmp_path / "task.md"
-@@ -56,18 +58,19 @@ def project(tmp_path):
- 
++      "batch": 2,
++      "type": "text",
++      "question": "Which prepared repository is the baseline checkout?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.model",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which model identity or path does the run load?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.model_revision",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",

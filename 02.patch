@@ -7,10 +7,43 @@
  - 脚本可捕获已知候选错误，正常结束并写 `{"status":"candidate_failure","reason":"..."}`。候选失败保留为 FAIL 并消耗一轮，后续可修改。不要把设备故障捕获成候选错误。
  - 非零退出、超时、缺少或无法解析的输出不猜测为正确性失败，而是 INCONCLUSIVE，阻止继续把缺失证据当成有效比较。
 diff --git a/docs/guides/service-reuse-campaigns.md b/docs/guides/service-reuse-campaigns.md
-index 0848b32ff..cfe8f8b34 100644
+index 0848b32ff..60abe54d5 100644
 --- a/docs/guides/service-reuse-campaigns.md
 +++ b/docs/guides/service-reuse-campaigns.md
-@@ -116,8 +116,10 @@ Use `campaign start --help` for shared budget/input arguments. In service mode
+@@ -36,7 +36,7 @@ Supply a JSON file with these fields; every threshold and workload is explicit:
+ | `scenarios` | Objects declaring unique string `id`, `workload`, positive integer `requests`, and positive integer `required_successes` no greater than requests |
+ | `objectives` | Objects described below; at least one participates in gain assessment |
+ | `ranking` | Unique objective IDs in priority order |
+-| `quality` | `mode`, `dataset`, `scorer`, `key`, `direction`, positive integer `samples`, plus the corresponding quality gate |
++| `quality` | `mode`, `dataset`, `scorer`, `key`, `unit`, `direction`, positive integer `samples`, plus the corresponding quality gate |
+ | `stagnation` | `{"disabled": true}`, or positive integer `rounds` and `action` equal to `advisory` or `pause` |
+ | `screening` | Optional argv `command` and positive `estimated_gain`; the estimate never replaces a formal gate |
+ 
+@@ -50,7 +50,13 @@ thresholds for negative-valued domains.
+ 
+ For quality, `absolute` requires `threshold`. `baseline_comparison` requires
+ nonnegative `tolerance` and compares with the compatible retained baseline score.
+-By default the baseline service collects the reference after its performance.
++The approved `quality.unit` is the scale for the threshold and the additive
++tolerance. Each scored receipt, including an external baseline reference, reports
++its own `unit`. The harness converts `fraction` / `ratio` and `%` / `percent`
++to the approved scale before storing the score. Other units must match exactly.
++Unknown or incompatible units produce `INCONCLUSIVE`. A baseline tolerance in
++`%` specifies percentage points. By default the baseline service collects the
++reference after its performance.
+ An optional `reference_path` points inside the retained protocol to a compatible
+ existing baseline quality result. In addition to the quality-result fields,
+ that result declares `revision`, `conditions`, `service_id`, and `run_id`.
+@@ -85,7 +91,7 @@ Harness checks service liveness and binding between stages.
+ Each measurement result contains `scenarios[scenario_id]` with `workload`, actual
+ `requests`, `successes`, the declared metric fields, and `units[objective_id]`.
+ Every repetition covers every required scenario. Warmup results are separate.
+-Quality results contain `dataset`, `scorer`, `samples`, and the declared numeric
++Quality results contain `dataset`, `scorer`, `samples`, `unit`, and the declared numeric
+ score field. An explicit `status: candidate_failure` from precheck/quality is a
+ rejection; crashes, absent evidence and incompatible results are INCONCLUSIVE.
+ 
+@@ -116,8 +122,10 @@ Use `campaign start --help` for shared budget/input arguments. In service mode
  supply `--evaluation-config <protocol.json>` and omit the AB/BA single-metric,
  quality-command and sampling flags. Mixing both parameter sets is an error.
  
@@ -22,7 +55,7 @@ index 0848b32ff..cfe8f8b34 100644
  inferrsi campaign baseline --session <campaign>
  inferrsi campaign diagnose --session <campaign> --bottleneck <description> --evidence <summary.txt>
  inferrsi campaign knowledge --session <campaign> --query <cue> --context-bytes <bytes>
-@@ -271,6 +273,7 @@ version shown in `recorded_runtime_version`.
+@@ -271,6 +279,7 @@ version shown in `recorded_runtime_version`.
  
  ## Records, compatibility and validation
  
@@ -46,10 +79,10 @@ index a98469097..24c7e3cfb 100644
  | JSON Schema (draft 2020-12) | `src/inferrsi/apps/cli/task-input/v1/schema.json` in the wheel | `inferrsi task schema` |
 diff --git a/docs/guides/task-intake.md b/docs/guides/task-intake.md
 new file mode 100644
-index 000000000..e82583966
+index 000000000..780c49aaf
 --- /dev/null
 +++ b/docs/guides/task-intake.md
-@@ -0,0 +1,232 @@
+@@ -0,0 +1,242 @@
 +# Task intake records (intake/v1)
 +
 +`intake/v1` is the confirmation record an Agent fills before a measured task.
@@ -57,64 +90,3 @@ index 000000000..e82583966
 +interview all write the same record; the record decides which fields still
 +block the next stage. It sits next to, not inside, the shared YAML task file
 +(`task-input/v1`, [task input](task-input.md)): the record states where each
-+value came from, and only fields mapped to `task-input/v1` are expected to
-+reach a task file.
-+
-+The contract is `inferrsi.apps.cli.intake_contract`; the commands are
-+`inferrsi task intake ...`. Nothing here starts a process, probes a device or
-+freezes a gate. `evaluate` and `answer` update the named record under a sibling `.lock` file.
-+If an update is in progress, retry after it finishes.
-+
-+## Files
-+
-+| File | Owner |
-+| --- | --- |
-+| `src/inferrsi/apps/cli/intake_contract.py` | Record validation, question selection, answers, summary; pure functions |
-+| `skill_library/tasks/task-performance/intake.json` | Field spec for a performance round |
-+| `skill_library/tasks/task-day-0/intake.json` | Day-zero fields; none map to `task-input/v1` |
-+| `src/inferrsi/apps/cli/task_intake.py` | Record file I/O and the commands |
-+| `tests/fixtures/intake/` | Complete, partial and frozen-gate fixtures |
-+
-+## Record
-+
-+```json
-+{
-+  "schema_version": 1,
-+  "record_id": "intake-...",
-+  "revision": 3,
-+  "task": "task-performance",
-+  "primary_task": {"value": "task-performance", "source": "prompt", "status": "confirmed"},
-+  "phase": "intake",
-+  "fields": {
-+    "acceptance.reference": {"value": "<acceptance-issue>", "source": "prompt", "status": "confirmed"},
-+    "acceptance.metric_key": {"value": "p95_ttft", "source": "issue", "status": "confirmed",
-+                              "authority_reference": "<acceptance-issue>"},
-+    "protocol.comparison": {"value": null, "source": "answer:q:protocol.comparison",
-+                            "status": "unknown", "asked": true}
-+  },
-+  "open_questions": [],
-+  "blockers": [],
-+  "conflicts": [],
-+  "allowed_next": ["read_only_preparation"],
-+  "execution": "not started"
-+}
-+```
-+
-+- `source` names where a value came from: `prompt`, `answer:<question-id>`,
-+  `task_file`, `issue`, `repo_inspection`, `derived`, `default`,
-+  `grilling_brief`, `frozen_gate` or `unknown`. The caller declares it; InferRSI
-+  records it and does not authenticate it.
-+- `status` is one of `confirmed`, `proposed`, `assumed`, `unknown`,
-+  `conflicting`, `stale`, `superseded`.
-+- `allowed_next` is derived by `evaluate`; a caller never fills it by hand.
-+  `service_execution` and `device_execution` never appear there: they need a
-+  separate authorization.
-+
-+## Field specs
-+
-+Each primary task owns an `intake.json` next to its `SKILL.md`. A field declares:
-+
-+| Key | Meaning |
-+| --- | --- |
-+| `path` | Field path; `acceptance.*` paths carry the gate boundary |
-+| `maps_to` | `task-input/v1`, `campaign-protocol`, `session-protocol`, `summary-only` or `day0-spec` |

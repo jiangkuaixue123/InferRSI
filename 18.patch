@@ -1,117 +1,122 @@
-+            target = {"target_kind": "relative_improvement_pct",
-+                      "target_value": plan["candidate_min_improvement_pct"]}
-+        elif role == "final":
-+            target = plan.get("performance_target")
-+        if target and gate["passed"]:
-+            from .project import meets_target
++    change = (candidate - baseline) / abs(baseline) * 100
++    if not math.isfinite(change):
++        return None
++    return (change if direction == "maximize" else -change) >= target["target_value"]
 +
-+            name = settings["ranking"][0]
-+            objective = next(obj for obj in settings["objectives"] if obj["id"] == name)
-+            gate["passed"] = meets_target(
-+                target, baseline=initial["measurements"]["values"][name],
-+                candidate=measured["values"][name], direction=objective["direction"])
-+            if gate["passed"] is None:
-+                raise ValueError("Undefined relative performance target against the baseline")
-+            if not gate["passed"]:
-+                gate["reason"] = ("final_performance_target_not_met" if role == "final"
-+                                  else "performance_gate_not_met")
-         if not gate["passed"]:
-             skipped(("quality",), "performance_gate_not_met")
-             if role != "candidate":
-                 skipped(("profile",), "not_required")
-             record["assessment"] = assessment(
--                "FAIL", "performance_gate_not_met", performance=gate
-+                "FAIL", gate["reason"], performance=gate
-             )
-         elif pending.get("reference_kind") == "parent":
-             skipped(("quality", "profile"), "performance_reference_only")
-diff --git a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
-index 3abf1a04e..3e2192c56 100644
---- a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
-+++ b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
-@@ -1,7 +1,7 @@
- {
-   "schema_version": 1,
-   "repository": "https://github.com/InferMatrixLab/InferRSI",
--  "source_revision": "bf14fec0bd909efcfeb2bc02d69fe227d0c51ce6",
-+  "source_revision": "6f5775d29d3546732113900ef811d60a5943aa62",
-   "registry": {
-     "path": "src/inferrsi/knowledge/data/skill_library/skill-index.json",
-     "sha256": "d243e2ae44c7badc8e68788153de35fe6ac31de618b7499fef6339eadf396871"
-diff --git a/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json b/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
-index 93037ddac..4fc6071a2 100644
---- a/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
-+++ b/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
-@@ -614,7 +614,7 @@
-       "description": "Select the starting route for day-0 model support, inference performance optimization, debugging, accuracy repair, version alignment, derived-engine development or independent runtime bring-up."
-     },
-     "files": {
--      "SKILL.md": "3dae791f61b26810332e05fbabe6fd7113abf9ed8609aef663535a267525849c",
-+      "SKILL.md": "ea7b823fd4b4e00531356649ef0963854a93cf958db2880efdceec870d6f0c5c",
-       "references/routes/accuracy.json": "5a672842ec26262d8827f7ce8d92de9bd956859ff5244189c0519b8f0dd188e3",
-       "references/routes/day0-model.json": "77b26d1300e5535d8b595cef95c6c803ea1322e92f38b68ae2905f69355a814f",
-       "references/routes/debug.json": "75241e43d12fb961d3f48d1b683e4df321c0f18e683959aedca9722e78a8b78f",
-@@ -1168,7 +1168,8 @@
-       "description": "Use for Day-0 onboarding of a new checkpoint or architecture to a named inference engine. Produce a reproducible target run, stage parity evidence and a regression fixture."
-     },
-     "files": {
--      "SKILL.md": "ca187de2205b3aa86b4ca5123fb0107a8235aa84f9d942d3771a8a665df1a0a3"
-+      "SKILL.md": "ca187de2205b3aa86b4ca5123fb0107a8235aa84f9d942d3771a8a665df1a0a3",
-+      "intake.json": "14ebe6f94888b17a06970ac7729ebd14f19c73c2de50ee16100c6eced85b0bbc"
-     }
-   },
-   "task-debug": {
-@@ -1204,7 +1205,8 @@
-       "description": "Use when a correct inference baseline misses a latency, throughput, memory or cost target. Compare compatible changes under the user's workload and quality gate."
-     },
-     "files": {
--      "SKILL.md": "bf5a137504566b6ee4eeaee18400d52aae99a1db3c8247dea7247d653103df0b"
-+      "SKILL.md": "46b44df9d2b6b91ae305df21536d9cf04903b3ea442b0413b3f2319452faafb9",
-+      "intake.json": "13ecae20885d7ea07bbb00b84be3481f4a825590e2e4044abd6cdb2d6bcaf680"
-     }
-   },
-   "task-version-alignment": {
-diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md b/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
-index d7ff9c811..cc1db9035 100644
---- a/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
-+++ b/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
-@@ -43,6 +43,8 @@ metadata:
++
++def quality_score_in_unit(score, reported_unit, approved_unit):
++    """Return the score in the frozen unit; only proportional scales can cross units."""
++    unspecified = ("", "unknown", "unspecified", "n/a")
++    for unit in (reported_unit, approved_unit):
++        if not isinstance(unit, str) or unit.strip().lower() in unspecified:
++            raise ValueError("quality_unit_mismatch")
++    if reported_unit == approved_unit:
++        return score
++    scales = {"%": 2, "percent": 2, "fraction": 0, "ratio": 0}
++    if reported_unit not in scales or approved_unit not in scales:
++        raise ValueError("quality_unit_mismatch")
++    converted = float(Decimal(str(score)).scaleb(scales[approved_unit] - scales[reported_unit]))
++    if not math.isfinite(converted):
++        raise ValueError("quality_unit_mismatch")
++    return converted
++
++
+ def inspect_step(directory: Path, settings: dict, definition: dict, execution: dict) -> dict:
+     """Interpret one frozen script's explicit result, never guess a crash's cause."""
+     failure = {"status": "infrastructure_failure", "reason": "failed_execution"}
+@@ -114,7 +150,29 @@ def inspect_step(directory: Path, settings: dict, definition: dict, execution: d
+         return {**failure, "reason": "missing_or_invalid_result"}
+     evidence = {relative: sha256(path)}
+     rejected = document.get("status") == "candidate_failure"
++    benchmark = settings.get("quality_benchmark")
++    if (definition["phase"] == "quality" and benchmark is not None and not rejected
++            and document.get("dataset") != benchmark):
++        return {**failure, "reason": "quality_benchmark_mismatch", "evidence_files": evidence}
+     quality = _value(document, settings["quality_key"])
++    bound = settings.get("quality_bound")
++    if definition["phase"] == "quality" and bound and quality is True:
++        score = _value(document, bound["metric"])
++        unit = document.get("unit")
++        if (type(score) is bool and bound["metric"] == settings["quality_key"]
++                and bound.get("unit") == "boolean"):
++            unit = document.get("unit", "boolean")
++            score = int(score)
++        if type(score) not in (float, int) or not math.isfinite(score):
++            return {**failure, "reason": "missing_numeric_quality_evidence",
++                    "evidence_files": evidence}
++        try:
++            score = quality_score_in_unit(score, unit, bound.get("unit"))
++        except ValueError as exc:
++            return {**failure, "reason": str(exc), "evidence_files": evidence}
++        limit = bound["limit"]
++        quality = {"at_least": score >= limit, "at_most": score <= limit, "equal": score == limit}[
++            bound["comparator"]]
+     if rejected or (definition["phase"] == "quality" and quality is False):
+         return {"status": ("candidate_failure" if definition["side"] == "candidate"
+                            else "infrastructure_failure"),
+@@ -137,7 +195,7 @@ def inspect_step(directory: Path, settings: dict, definition: dict, execution: d
  
- Choose one primary skill by the requested deliverable. Load its full procedure
- before the first supporting evidence search. Record secondary tasks for follow-up.
-+When two primary skills remain plausible after reading the request, ask the user
-+which deliverable they want before loading either; do not guess a route.
- The route cards remain available to callers that consume the JSON summaries.
  
- | Primary skill | Choose it when | Route card |
-diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json
-new file mode 100644
-index 000000000..d01200c5b
---- /dev/null
-+++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json
-@@ -0,0 +1,63 @@
-+{
-+  "schema_version": 1,
-+  "task": "task-day-0",
-+  "description": "Confirmation fields for day-zero support of a new checkpoint or architecture. These fields have no task-input/v1 home; they stay in the intake record and the task summary until a later task-file version defines them.",
-+  "fields": [
-+    {
-+      "path": "day0.checkpoint",
-+      "maps_to": "day0-spec",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which checkpoint or weights must the target engine load?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.tokenizer_or_processor",
-+      "maps_to": "day0-spec",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which tokenizer or processor accompanies the checkpoint?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.target_engine_and_device",
-+      "maps_to": "day0-spec",
-+      "batch": 1,
+ def assess(directory: Path, settings: dict, execution: dict, *,
+-           mechanism: dict | None = None) -> dict:
++           mechanism: dict | None = None, final_target: dict | None = None) -> dict:
+     """Judge one attempt; ``mechanism`` is the declaration bound before execution."""
+     evidence = {}
+ 
+@@ -229,6 +287,13 @@ def result(status, reason, **fields):
+             verdict, reason = "FAIL", "explanation_" + explanation["status"]
+         elif explanation["status"] != "explained":
+             verdict, reason = "INCONCLUSIVE", "explanation_" + explanation["status"]
++    if final_target and verdict == "PASS":
++        passed = meets_target(final_target, baseline=before, candidate=after,
++                              direction=settings["direction"])
++        if passed is None:
++            verdict, reason = "INCONCLUSIVE", "final_target_evidence_unavailable"
++        elif not passed:
++            verdict, reason = "FAIL", "final_performance_target_not_met"
+     accepted = verdict == "PASS"
+     point = {"improvement_pct": improvement, "speedup": speedup}
+     score, baseline_score, basis = after, before, "candidate_median"
+@@ -259,6 +324,7 @@ def result(status, reason, **fields):
+         paired_statistics=paired, decision=decision,
+         require_explanation=settings.get("require_explanation", False),
+         profile_evidence=observed, explanation=explanation,
+-        quality_contract="Only the supplied frozen quality script and its boolean result",
++        quality_contract=settings.get(
++            "quality_bound", "Only the supplied frozen quality script and its boolean result"),
+         environment_qualification="Caller-managed; no automatic hardware isolation claim",
+     )
+diff --git a/src/inferrsi/harness/project_service.py b/src/inferrsi/harness/project_service.py
+index c1bcde2d3..0092342ea 100644
+--- a/src/inferrsi/harness/project_service.py
++++ b/src/inferrsi/harness/project_service.py
+@@ -11,11 +11,13 @@
+ import subprocess
+ import time
+ import uuid
++from decimal import Decimal
+ from pathlib import Path
+ from statistics import mean, median
+ 
+ from .atomic_json import atomic_write_json
+ from .candidates import members, retain
++from .project import meets_target, quality_score_in_unit
+ 
+ INLINE_PROFILE_REASONS = ("fixed_checks_satisfied", "performance_gate_not_met")
+ 
+@@ -200,10 +202,10 @@ def validate(settings):
+         or quality.get("direction") not in ("minimize", "maximize")
+         or not all(
+             isinstance(quality.get(key), str) and quality[key].strip()
+-            for key in ("key", "dataset", "scorer")
++            for key in ("key", "dataset", "scorer", "unit")
+         )
+     ):
+-        raise ValueError("Declare quality mode, direction, dataset, scorer and key")
++        raise ValueError("Declare quality mode, direction, dataset, scorer, unit and key")
+     gate = "threshold" if quality["mode"] == "absolute" else "tolerance"
+     if type(quality.get("samples")) is not int or quality["samples"] < 1:
+         raise ValueError("Declare the required quality sample count")
+@@ -346,7 +348,7 @@ def quality_score(settings, document):
+         or document["samples"] != config["samples"]
+     ):

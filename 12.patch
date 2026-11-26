@@ -1,3 +1,81 @@
++            issued = prior.get("issued_revision", issued)
++            break
++    identity = _canonical([record["record_id"], issued, card])
++    digest = hashlib.sha256(identity.encode()).hexdigest()
++    return {**card, "id": f"{_QUESTION}{field['path']}:{digest}", "issued_revision": issued}
++
++
++def _frozen_conflicts(record: dict, spec: dict, frozen: dict | None) -> list[dict]:
++    if not frozen:
++        return []
++    conflicts = []
++    for field in spec["fields"]:
++        path = field["path"]
++        if not path.startswith(ACCEPTANCE) or path not in frozen:
++            continue
++        entry = _entry(record, path)
++        if entry.get("value") is None:
++            continue
++        if _canonical(entry["value"]) != _canonical(frozen[path]):
++            conflicts.append({
++                "field": path,
++                "message": "record value disagrees with the frozen gate record",
++                "record_value": entry["value"],
++                "frozen_value": frozen[path],
++            })
++    return conflicts
++
++
++def _service_quality_line(quality: dict, unit: str) -> str:
++    metric = quality["key"]
++    higher = quality["direction"] == "maximize"
++    direction = "higher is better" if higher else "lower is better"
++    operator = ">=" if higher else "<="
++    if quality["mode"] == "absolute":
++        limit = str(quality["threshold"]).removesuffix(".0")
++        return f"{metric} {operator} {limit} {unit} (absolute threshold; {direction})"
++    tolerance = str(quality["tolerance"]).removesuffix(".0")
++    sign = "-" if higher else "+"
++    if unit in ("%", "percent"):
++        unit = "percentage point" if quality["tolerance"] == 1 else "percentage points"
++    return (f"{metric} {operator} baseline {metric} {sign} {tolerance} {unit} "
++            f"(baseline comparison; {direction}; reference: retained baseline score "
++            "for the current comparison epoch)")
++
++
++def _performance_brief(record: dict, spec: dict) -> dict:
++    values = {field["path"]: _coerce(field, record["fields"][field["path"]]["value"])
++              for field in spec["fields"] if _applicable(record, field)}
++    metric = values["acceptance.metric_key"]
++    target = str(values["protocol.target_value"]).removesuffix(".0")
++    if values["protocol.target_kind"] == "relative_improvement_pct":
++        performance = f"{metric}: improve by at least {target}% over the pinned baseline"
++    else:
++        comparison = "<=" if values["acceptance.direction"] == "minimize" else ">="
++        performance = f"{metric} {comparison} {target} {values['acceptance.metric_unit']}"
++    operators = {"at_least": ">=", "at_most": "<=", "equal": "="}
++    operator = operators[values["protocol.quality_comparator"]]
++    limit = str(values["protocol.quality_limit"]).removesuffix(".0")
++    quality = (f"{values['protocol.quality_metric']} {operator} "
++               f"{limit} {values['protocol.quality_unit']}")
++    brief = {"record_id": record["record_id"], "revision": record["revision"],
++             "task": record["task"], "performance_target": performance, "quality_gate": quality,
++             "benchmark": values["protocol.quality_benchmark"], "conditions": values}
++    if "campaign_launch" in record:
++        brief["campaign_launch"] = record["campaign_launch"]
++        service_quality = _bound_service_quality(record)
++        if service_quality:
++            brief["quality_gate"] = _service_quality_line(
++                service_quality, values["protocol.quality_unit"])
++            values["protocol.quality_mode"] = service_quality["mode"]
++            values["protocol.quality_direction"] = service_quality["direction"]
++            if service_quality["mode"] == "baseline_comparison":
++                values["protocol.quality_baseline_tolerance"] = values.pop("protocol.quality_limit")
++                values["protocol.quality_reference"] = (
++                    "retained baseline score for the current comparison epoch")
++    elif values["protocol.comparison"] == "service_reuse":
++        brief["quality_gate_status"] = "provisional"
++        brief["quality_gate"] = (
 +            f"Provisional service quality inputs: {values['protocol.quality_metric']}, "
 +            f"{limit} {values['protocol.quality_unit']}. Prepare the executable plan to show "
 +            "whether this value is an absolute threshold or a tolerance against the baseline.")
@@ -44,95 +122,6 @@
 +        if missing:
 +            lowest = min(field.get("batch", 1) for field in missing)
 +            question_fields = [field for field in missing if field.get("batch", 1) == lowest]
-+    questions = [_question(record, spec, field) for field in question_fields]
++    questions = [_question(record, field) for field in question_fields]
 +    blockers = []
 +    for stage in BLOCKING_STAGES:
-+        blocked_by = []
-+        for path, entry in ((path, _entry(record, path)) for path in fields):
-+            field = fields[path]
-+            if stage not in field.get("required_before", []):
-+                continue
-+            if not _applicable(record, field):
-+                continue
-+            status = entry.get("status")
-+            if status in BLOCKING or (
-+                stage == "candidate_search" and path.startswith(ACCEPTANCE)
-+                and status != "confirmed"
-+            ):
-+                blocked_by.append({"field": path, "status": status})
-+        if blocked_by:
-+            blockers.append({"stage": stage, "blocked_by": blocked_by})
-+    if conflicts:
-+        entries = [{"field": item["field"], "status": "conflicting"} for item in conflicts]
-+        existing = next((item for item in blockers if item["stage"] == "candidate_search"),
-+                        None)
-+        if existing is None:
-+            blockers.append({"stage": "candidate_search", "blocked_by": entries})
-+        else:
-+            existing["blocked_by"].extend(entries)
-+    brief = None
-+    review = "not_required"
-+    if spec["task"] == "task-performance":
-+        review = "collecting_inputs"
-+        if not blockers and not conflicts:
-+            brief = _performance_brief(record, spec)
-+            decision = record.get("brief_decision")
-+            review = "awaiting_confirmation"
-+            if decision == {"question": brief["id"], "value": "approve"}:
-+                review = "approved"
-+            elif decision == {"question": brief["id"], "value": "revise"}:
-+                review = "changes_requested"
-+            else:
-+                questions = [_brief_question(brief)]
-+        if review != "approved":
-+            for stage in ("baseline_measurement", "candidate_search"):
-+                blocker = next((item for item in blockers if item["stage"] == stage), None)
-+                if blocker is None:
-+                    blocker = {"stage": stage, "blocked_by": []}
-+                    blockers.append(blocker)
-+                blocker["blocked_by"].append({"field": "task_brief", "status": review})
-+    blocked_stages = {item["stage"] for item in blockers}
-+    allowed_next = ["read_only_preparation"] + [
-+        stage for stage in ("baseline_measurement", "candidate_search")
-+        if stage not in blocked_stages
-+    ]
-+    complete = not blockers and not conflicts
-+    return {
-+        "schema_version": SCHEMA_VERSION,
-+        "task": spec["task"],
-+        "record_id": record["record_id"],
-+        "revision": record["revision"],
-+        "phase": record["phase"],
-+        "primary_task": record["primary_task"],
-+        "questions": questions,
-+        "needs_user_input": bool(questions) or review == "changes_requested",
-+        "brief_review": review,
-+        "task_brief": brief,
-+        "blockers": blockers,
-+        "conflicts": conflicts,
-+        "allowed_next": allowed_next,
-+        "complete": complete,
-+        "execution": "not started",
-+        "fields": {
-+            path: {"value": entry.get("value"), "source": entry.get("source"),
-+                   "status": entry.get("status")}
-+            for path, entry in record["fields"].items()
-+        },
-+    }
-+
-+
-+def answer(record: dict, spec: dict, *, question_id: str, value: object = None,
-+           unknown: bool = False) -> dict:
-+    """Apply one answer to a copy of ``record``.
-+
-+    The question must be one ``evaluate`` previously recorded in
-+    ``record["open_questions"]``; its dependency snapshot must still hold and
-+    the field must still be open. A duplicate, stale or inapplicable delivery
-+    is rejected, so a late reply to a superseded question changes nothing.
-+    """
-+    record = reconcile_record(record, spec)
-+    open_questions = record.get("open_questions")
-+    if not isinstance(open_questions, list):
-+        raise IntakeError("invalid_record",
-+                          "open_questions must be recorded by evaluate before answering")
-+    question = next((item for item in open_questions

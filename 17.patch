@@ -1,3 +1,76 @@
++            with file_lock(path.with_name(path.name + ".lock")):
++                if args.intake_action == "evaluate":
++                    result = evaluate_command(args)
++                else:
++                    result = answer_command(args)
++    except BlockingIOError:
++        print(json.dumps({"error": "record_busy", "message": "Retry after the current update",
++                          "execution": "not started"}))
++        return 2
++    except intake.IntakeError as exc:
++        print(json.dumps({"error": exc.code, "message": str(exc), "execution": "not started"},
++                         ensure_ascii=False, indent=2))
++        return 2
++    if getattr(args, "json", False):
++        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
++    else:
++        print(render_summary(result) if args.intake_action == "summary" else render(result))
++    return 0
+diff --git a/src/inferrsi/harness/optimization_session.py b/src/inferrsi/harness/optimization_session.py
+index 8a522793a..cadbf0b31 100644
+--- a/src/inferrsi/harness/optimization_session.py
++++ b/src/inferrsi/harness/optimization_session.py
+@@ -58,7 +58,9 @@ def _session_assess(root, directory, plan, execution, mechanism=None):
+     if plan["task_source"] == "project":
+         from inferrsi.harness.project import assess
+ 
+-        return assess(directory, plan["evaluation_settings"], execution, mechanism=mechanism)
++        target = plan.get("performance_target") if directory.parent == root / "final" else None
++        return assess(directory, plan["evaluation_settings"], execution, mechanism=mechanism,
++                      final_target=target)
+     return run_protocol(root / "frozen", plan["frozen_files"]["optimization.py"], "assess",
+                         launch_directory=directory, directory=directory,
+                         settings=plan["evaluation_settings"],
+@@ -133,7 +135,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
+                     knowledge_reader=None,
+                     retain_context=None, external_knowledge=None, external_provider=None,
+                     external_project=None, external_provider_for=None,
+-                    report_metadata=None) -> dict:
++                    report_metadata=None, initialize=None) -> dict:
+     """Run one operation; discovery and knowledge access are supplied by the caller."""
+     from inferrsi.harness import optimization
+ 
+@@ -141,6 +143,8 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
+     if args.session_action == "start":
+         import math
+ 
++        initialize = initialize or optimization.initialize
++
+         from inferrsi.harness.artifact_primitives import sha256
+         from inferrsi.harness.candidates import identity, retain
+         from inferrsi.harness.task_protocol import prepare
+@@ -167,6 +171,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
+                 "metric_key",
+                 "metric_unit",
+                 "quality_key",
++                "quality_benchmark",
+                 "scope",
+                 "direction",
+                 "min_improvement_pct",
+@@ -205,7 +210,7 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
+                     "python": args.python,
+                     **settings,
+                 }
+-                result = optimization.initialize(root, plan)
++                result = initialize(root, plan)
+                 result["instructions"] = (
+                     "Run campaign baseline before candidate search. Record the measured "
+                     "bottleneck with campaign diagnose before knowledge or rounds. "
+@@ -227,7 +232,8 @@ def session_command(args, *, ranking_policy_for, task_source: Path | None = None
+                 raise ValueError("Campaign output must be outside the editable project")
+             identity(repo, args.include)  # Reject invalid inputs before preparation writes.
+             specification = {key: getattr(args, key) for key in (
+-                "metric_key", "metric_unit", "quality_key", "scope", "direction",
 +                "metric_key", "metric_unit", "quality_key", "quality_benchmark", "scope",
 +                "direction",
                  "min_improvement_pct", "repetitions", "warmups", "decision",
@@ -13,10 +86,18 @@
          result["instructions"] = (
              f"Read the frozen TASK.md. Record the measured bottleneck with {operation} "
 diff --git a/src/inferrsi/harness/project.py b/src/inferrsi/harness/project.py
-index da27f389f..8ef705636 100644
+index da27f389f..ca7881199 100644
 --- a/src/inferrsi/harness/project.py
 +++ b/src/inferrsi/harness/project.py
-@@ -28,6 +28,10 @@ def validate(settings: dict) -> None:
+@@ -7,6 +7,7 @@
+ import json
+ import math
+ import shutil
++from decimal import Decimal
+ from pathlib import Path
+ from statistics import median
+ 
+@@ -28,6 +29,10 @@ def validate(settings: dict) -> None:
      for key in ("metric_key", "metric_unit", "quality_key", "scope"):
          if not isinstance(settings[key], str) or not settings[key].strip():
              raise ValueError(f"An explicit {key} is required")
@@ -27,7 +108,7 @@ index da27f389f..8ef705636 100644
      if settings["direction"] not in ("minimize", "maximize"):
          raise ValueError("Metric direction must be explicit")
      if type(settings["repetitions"]) is not int or settings["repetitions"] < 1:
-@@ -97,6 +101,20 @@ def _value(document, key):
+@@ -97,6 +102,37 @@ def _value(document, key):
      return value
  
  
@@ -39,77 +120,3 @@ index da27f389f..8ef705636 100644
 +        return candidate <= limit if direction == "minimize" else candidate >= limit
 +    if baseline in (None, 0):
 +        return None
-+    change = (candidate - baseline) / abs(baseline) * 100
-+    if not math.isfinite(change):
-+        return None
-+    return (change if direction == "maximize" else -change) >= target["target_value"]
-+
-+
- def inspect_step(directory: Path, settings: dict, definition: dict, execution: dict) -> dict:
-     """Interpret one frozen script's explicit result, never guess a crash's cause."""
-     failure = {"status": "infrastructure_failure", "reason": "failed_execution"}
-@@ -114,7 +132,22 @@ def inspect_step(directory: Path, settings: dict, definition: dict, execution: d
-         return {**failure, "reason": "missing_or_invalid_result"}
-     evidence = {relative: sha256(path)}
-     rejected = document.get("status") == "candidate_failure"
-+    benchmark = settings.get("quality_benchmark")
-+    if (definition["phase"] == "quality" and benchmark is not None and not rejected
-+            and document.get("dataset") != benchmark):
-+        return {**failure, "reason": "quality_benchmark_mismatch", "evidence_files": evidence}
-     quality = _value(document, settings["quality_key"])
-+    bound = settings.get("quality_bound")
-+    if definition["phase"] == "quality" and bound and quality is True:
-+        score = _value(document, bound["metric"])
-+        if type(score) is bool and bound["metric"] == settings["quality_key"]:
-+            score = int(score)
-+        if type(score) not in (float, int) or not math.isfinite(score):
-+            return {**failure, "reason": "missing_numeric_quality_evidence",
-+                    "evidence_files": evidence}
-+        limit = bound["limit"]
-+        quality = {"at_least": score >= limit, "at_most": score <= limit, "equal": score == limit}[
-+            bound["comparator"]]
-     if rejected or (definition["phase"] == "quality" and quality is False):
-         return {"status": ("candidate_failure" if definition["side"] == "candidate"
-                            else "infrastructure_failure"),
-@@ -137,7 +170,7 @@ def inspect_step(directory: Path, settings: dict, definition: dict, execution: d
- 
- 
- def assess(directory: Path, settings: dict, execution: dict, *,
--           mechanism: dict | None = None) -> dict:
-+           mechanism: dict | None = None, final_target: dict | None = None) -> dict:
-     """Judge one attempt; ``mechanism`` is the declaration bound before execution."""
-     evidence = {}
- 
-@@ -229,6 +262,13 @@ def result(status, reason, **fields):
-             verdict, reason = "FAIL", "explanation_" + explanation["status"]
-         elif explanation["status"] != "explained":
-             verdict, reason = "INCONCLUSIVE", "explanation_" + explanation["status"]
-+    if final_target and verdict == "PASS":
-+        passed = meets_target(final_target, baseline=before, candidate=after,
-+                              direction=settings["direction"])
-+        if passed is None:
-+            verdict, reason = "INCONCLUSIVE", "final_target_evidence_unavailable"
-+        elif not passed:
-+            verdict, reason = "FAIL", "final_performance_target_not_met"
-     accepted = verdict == "PASS"
-     point = {"improvement_pct": improvement, "speedup": speedup}
-     score, baseline_score, basis = after, before, "candidate_median"
-@@ -259,6 +299,7 @@ def result(status, reason, **fields):
-         paired_statistics=paired, decision=decision,
-         require_explanation=settings.get("require_explanation", False),
-         profile_evidence=observed, explanation=explanation,
--        quality_contract="Only the supplied frozen quality script and its boolean result",
-+        quality_contract=settings.get(
-+            "quality_bound", "Only the supplied frozen quality script and its boolean result"),
-         environment_qualification="Caller-managed; no automatic hardware isolation claim",
-     )
-diff --git a/src/inferrsi/harness/project_service.py b/src/inferrsi/harness/project_service.py
-index c1bcde2d3..1b7a7b564 100644
---- a/src/inferrsi/harness/project_service.py
-+++ b/src/inferrsi/harness/project_service.py
-@@ -858,12 +858,31 @@ def evaluate(role):
-             if parent is not None
-             else {"passed": True, "metrics": {}}
-         )
-+        target = None
-+        if role == "candidate" and "candidate_min_improvement_pct" in plan:

@@ -1,0 +1,28 @@
+                 )
+diff --git a/tests/harness/test_service_reference_evidence.py b/tests/harness/test_service_reference_evidence.py
+index 1f1e1fbfc..9f70fb78a 100644
+--- a/tests/harness/test_service_reference_evidence.py
++++ b/tests/harness/test_service_reference_evidence.py
+@@ -115,6 +115,7 @@ def test_changed_external_baseline_quality_reference_blocks_final(campaign):
+         "run_id": "external-run",
+         "dataset": "synthetic",
+         "scorer": "exact-v1",
++        "unit": "points",
+         "samples": 2,
+         "quality": 1,
+     }
+diff --git a/tests/repository/check_installed.py b/tests/repository/check_installed.py
+index 99c3055d9..2ec27c105 100644
+--- a/tests/repository/check_installed.py
++++ b/tests/repository/check_installed.py
+@@ -609,7 +609,9 @@ def _inventory(root, prefix):
+     **_inventory(files("inferrsi").joinpath("knowledge", "data"), "knowledge/data"),
+     **_inventory(files("inferrsi").joinpath("harness", "data"), "harness/data"),
+ }
+-assert len(inventory) == 775, f"installed resource count is {len(inventory)}, expected 775"
++assert len(inventory) == 777, f"installed resource count is {len(inventory)}, expected 777"
++for task in ("task-day-0", "task-performance"):
++    assert f"knowledge/data/skill_library/tasks/{task}/intake.json" in inventory
+ for name in inventory:
+     if "/skill_library/" in name and name.endswith("/SKILL.md"):
+         assert name.removesuffix("SKILL.md") + "metadata.json" not in inventory, name

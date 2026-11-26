@@ -1,3 +1,83 @@
++    if quality and quality["mode"] == "baseline_comparison" and comparator["status"] in SETTLED:
++        expected = "at_least" if quality["direction"] == "maximize" else "at_most"
++        if comparator["value"] != expected:
++            updated["fields"]["protocol.quality_comparator"] = {
++                "value": None, "source": comparator["source"], "status": "conflicting",
++                "candidates": [{"value": comparator["value"], "source": comparator["source"]},
++                               {"value": expected, "source": "service quality direction"}],
++            }
++            reopened = True
++    if reopened:
++        _bump(updated, updated["revision"] + 1)
++    return updated
++
++
++def _bump(record: dict, next_revision: int) -> None:
++    record.pop("brief_decision", None)
++    record.pop("campaign_launch", None)
++    record["revision"] = next_revision
++
++
++def _rank(status: str) -> int:
++    return {"confirmed": 2, "proposed": 1}.get(status, 0)
++
++
++def set_fields(record: dict, spec: dict, values: dict, *, source: str) -> dict:
++    """Merge stated values into a copy of ``record``; raise on invalid fields/values."""
++    if source.startswith("answer:"):
++        raise IntakeError("invalid_source", "Use intake answer to record a user reply")
++    if not isinstance(values, dict):
++        raise IntakeError("invalid_record", "values must be a mapping")
++    updated = reconcile_record(record, spec)
++    fields = _field_paths(spec)
++    reference = selected_reference(updated)
++    changed = False
++    revision = updated["revision"]
++    for path, raw in values.items():
++        if path not in fields:
++            raise IntakeError("invalid_field", f"{path} is not a field of {spec['task']}")
++        value = _coerce(fields[path], raw)
++        entry = {"value": value, "source": source}
++        if path.startswith(ACCEPTANCE) and path != REFERENCE and source in AUTHORITATIVE:
++            entry["authority_reference"] = (values.get(REFERENCE) if source == "issue"
++                                            else reference)
++        bound = _bound_value(updated, path, entry)
++        if not bound:
++            entry.pop("authority_reference", None)
++        status = _status_for(fields[path], source, bound=bound)
++        entry["status"] = status
++        current = updated["fields"].get(path)
++        if (current and current["status"] == "unknown" and current.get("asked")
++                and status == "assumed"):
++            continue
++        if current is not None and not current.get("candidates") and (
++            current.get("value") == value
++        ):
++            if _rank(status) <= _rank(current.get("status", "unknown")):
++                continue
++            updated["fields"][path] = entry
++            changed = True
++            continue
++        if (current is not None and current.get("status") == "conflicting"
++                and isinstance(current.get("candidates"), list)):
++            if all(item["value"] != value for item in current["candidates"]):
++                current["candidates"].append({"value": value, "source": source})
++                changed = True
++            continue
++        if (current is not None and current.get("status") not in (None, "unknown")
++                and current.get("value") is not None and current.get("value") != value):
++            disagrees_with_answer = bound and _card_source(path, current["source"])
++            if _rank(status) > _rank(current["status"]) and not disagrees_with_answer:
++                updated["fields"][path] = entry
++                changed = True
++            elif _rank(status) < _rank(current["status"]):
++                continue
++            else:
++                updated["fields"][path] = {"value": None, "source": source,
++                                           "status": "conflicting",
++                                           "candidates": [
++                                               {"value": current["value"],
++                                                "source": current.get("source", "unknown")},
 +                                               {"value": value, "source": source},
 +                                           ]}
 +                changed = True
@@ -8,21 +88,6 @@
 +        changed = True
 +    if changed:
 +        _bump(updated, revision + 1)
-+    return updated
-+
-+
-+def set_primary_task(record: dict, spec: dict, *, value: str, source: str) -> dict:
-+    """Change the selected primary task; open questions become stale by snapshot."""
-+    _check(record, spec)
-+    if value != record["task"]:
-+        raise IntakeError(
-+            "invalid_primary_task",
-+            f"record task is {record['task']}; a different primary task needs its own record",
-+        )
-+    updated = copy.deepcopy(record)
-+    if updated["primary_task"].get("source") != source:
-+        updated["primary_task"] = {"value": value, "source": source, "status": "confirmed"}
-+        _bump(updated, updated["revision"] + 1)
 +    return updated
 +
 +
@@ -38,7 +103,7 @@
 +    return True
 +
 +
-+def _question(record: dict, spec: dict, field: dict) -> dict:
++def _question(record: dict, field: dict) -> dict:
 +    snapshot = {"__primary_task__": record["primary_task"]["value"]}
 +    dependencies = list(field.get("depends_on", []))
 +    when = field.get("required_when")
@@ -55,8 +120,7 @@
 +    if entry.get("status") == "conflicting" and isinstance(entry.get("candidates"), list):
 +        options = [{"value": item["value"], "hint": f"from {item['source']}"}
 +                   for item in entry["candidates"]]
-+    return {
-+        "id": _QUESTION + field["path"],
++    card = {
 +        "field": field["path"],
 +        "batch": field.get("batch", 1),
 +        "question": field["question"],
@@ -64,74 +128,8 @@
 +        "fallback": "unknown",
 +        "depends_on": snapshot,
 +    }
-+
-+
-+def _frozen_conflicts(record: dict, spec: dict, frozen: dict | None) -> list[dict]:
-+    if not frozen:
-+        return []
-+    conflicts = []
-+    for field in spec["fields"]:
-+        path = field["path"]
-+        if not path.startswith(ACCEPTANCE) or path not in frozen:
-+            continue
-+        entry = _entry(record, path)
-+        if entry.get("value") is None:
-+            continue
-+        if _canonical(entry["value"]) != _canonical(frozen[path]):
-+            conflicts.append({
-+                "field": path,
-+                "message": "record value disagrees with the frozen gate record",
-+                "record_value": entry["value"],
-+                "frozen_value": frozen[path],
-+            })
-+    return conflicts
-+
-+
-+def _service_quality_line(quality: dict, unit: str) -> str:
-+    metric = quality["key"]
-+    higher = quality["direction"] == "maximize"
-+    direction = "higher is better" if higher else "lower is better"
-+    operator = ">=" if higher else "<="
-+    if quality["mode"] == "absolute":
-+        limit = str(quality["threshold"]).removesuffix(".0")
-+        return f"{metric} {operator} {limit} {unit} (absolute threshold; {direction})"
-+    tolerance = str(quality["tolerance"]).removesuffix(".0")
-+    sign = "-" if higher else "+"
-+    return (f"{metric} {operator} baseline {metric} {sign} {tolerance} {unit} "
-+            f"(baseline comparison; {direction}; reference: retained baseline score "
-+            "for the current comparison epoch)")
-+
-+
-+def _performance_brief(record: dict, spec: dict) -> dict:
-+    values = {field["path"]: _coerce(field, record["fields"][field["path"]]["value"])
-+              for field in spec["fields"] if _applicable(record, field)}
-+    metric = values["acceptance.metric_key"]
-+    target = str(values["protocol.target_value"]).removesuffix(".0")
-+    if values["protocol.target_kind"] == "relative_improvement_pct":
-+        performance = f"{metric}: improve by at least {target}% over the pinned baseline"
-+    else:
-+        comparison = "<=" if values["acceptance.direction"] == "minimize" else ">="
-+        performance = f"{metric} {comparison} {target} {values['acceptance.metric_unit']}"
-+    operators = {"at_least": ">=", "at_most": "<=", "equal": "="}
-+    operator = operators[values["protocol.quality_comparator"]]
-+    limit = str(values["protocol.quality_limit"]).removesuffix(".0")
-+    quality = (f"{values['protocol.quality_metric']} {operator} "
-+               f"{limit} {values['protocol.quality_unit']}")
-+    brief = {"record_id": record["record_id"], "revision": record["revision"],
-+             "task": record["task"], "performance_target": performance, "quality_gate": quality,
-+             "benchmark": values["protocol.quality_benchmark"], "conditions": values}
-+    if "campaign_launch" in record:
-+        brief["campaign_launch"] = record["campaign_launch"]
-+        service_quality = _bound_service_quality(record)
-+        if service_quality:
-+            brief["quality_gate"] = _service_quality_line(
-+                service_quality, values["protocol.quality_unit"])
-+            values["protocol.quality_mode"] = service_quality["mode"]
-+            values["protocol.quality_direction"] = service_quality["direction"]
-+            if service_quality["mode"] == "baseline_comparison":
-+                values["protocol.quality_baseline_tolerance"] = values.pop("protocol.quality_limit")
-+                values["protocol.quality_reference"] = (
-+                    "retained baseline score for the current comparison epoch")
-+    elif values["protocol.comparison"] == "service_reuse":
-+        brief["quality_gate_status"] = "provisional"
-+        brief["quality_gate"] = (
++    # Keep a batch sibling's token across unrelated edits. A reissued card gets
++    # the new revision even if a previous set of choices eventually comes back.
++    issued = record["revision"]
++    for prior in record.get("open_questions", []):
++        if isinstance(prior, dict) and all(prior.get(key) == value for key, value in card.items()):

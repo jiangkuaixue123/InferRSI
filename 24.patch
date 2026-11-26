@@ -1,135 +1,113 @@
-+    payload = json.dumps(old_brief, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-+    old_id = "q:task_brief:" + hashlib.sha256(payload.encode()).hexdigest()
-+    record["brief_decision"]["question"] = old_id
-+    task_intake.write_record(path, record)
-+    assert main(args) == 2
-+    reopened = json.loads(campaign["capsys"].readouterr().out)
-+    assert reopened["brief_review"] == "awaiting_confirmation"
-+    assert "baseline quality + 0.1 points" in reopened["task_brief"]["quality_gate"]
-+    assert not campaign["root"].exists()
-+
-+
-+def test_legacy_relative_maximize_reopens_comparator_before_a_new_card(campaign):
-+    from inferrsi.apps.cli import task_intake
-+    from tests.fixtures.campaign_intake import approved_start
-+
++        "    result = {'correct':compute(16)==32,'dataset':'fixture-exact-v1'}\n"
+         "except RuntimeError:\n"
+         "    result = {'status':'candidate_failure', 'reason':'compute raised RuntimeError'}\n"
+         "Path(sys.argv[2]).write_text(json.dumps(result))\n", encoding="utf-8")
+@@ -657,7 +662,8 @@ def test_dashboard_shows_failed_independent_final_separately_from_search(
+         "# Synthetic final-only rejection exercises result presentation, not quality policy.\n"
+         "passed = not ('final' in Path(sys.argv[2]).parts and "
+         f"Path(sys.argv[1]).name == {side!r})\n"
+-        "Path(sys.argv[2]).write_text(json.dumps({'correct':passed}))\n", encoding="utf-8")
++        "result = {'correct':passed,'dataset':'fixture-exact-v1'}\n"
++        "Path(sys.argv[2]).write_text(json.dumps(result))\n", encoding="utf-8")
+     start(project, capsys)
+     submit(project, capsys, 20)
+     assert main(["campaign", "final", "--directory", str(project[3]),
+diff --git a/tests/apps/test_project_service_reuse.py b/tests/apps/test_project_service_reuse.py
+index 1c99f94fe..8f29964cc 100644
+--- a/tests/apps/test_project_service_reuse.py
++++ b/tests/apps/test_project_service_reuse.py
+@@ -14,6 +14,7 @@
+ from inferrsi.apps.cli.arguments import parser
+ from inferrsi.apps.delivery import project, read_bundle
+ from inferrsi.harness import optimization, project_service
++from tests.fixtures.campaign_intake import preparation_arguments
+ from tests.fixtures.service_reuse import begin, call, commit, diagnose, rejected, settings, submit
+ from tests.fixtures.service_reuse import campaign as campaign
+ from tests.fixtures.service_reuse import no_fingerprints as no_fingerprints
+@@ -69,8 +70,16 @@ def events(campaign, attempt):
+ 
+ 
+ def test_one_service_order_and_independent_final_ignores_workspace(campaign):
 +    config = settings()
-+    config["quality"].pop("threshold")
-+    config["quality"].update(mode="baseline_comparison", tolerance=0.1)
++    config["quality"].update(direction="minimize", unit="%", threshold=1)
 +    campaign["config"].write_text(json.dumps(config))
-+    args = approved_start(campaign["start"])
-+    path = Path(args[-1])
-+    record = task_intake.read_record(path)
-+    record["fields"]["protocol.quality_comparator"]["value"] = "at_most"
-+    task_intake.write_record(path, record)
-+    assert main(args) == 2
-+    gate = json.loads(campaign["capsys"].readouterr().out)
-+    assert gate["task_brief"] is None
-+    assert gate["questions"][0]["field"] == "protocol.quality_comparator"
-+    assert not campaign["root"].exists()
++    commit(campaign["repo"], quality=0.005, score_unit="fraction")
+     begin(campaign)
+-    result = submit(campaign, version="accepted", a=95, b=102)
++    failed = submit(campaign, version="wrong-quality", a=90, quality=0.02, score_unit="fraction")
++    assert failed["latest_observation"]["assessment"]["verdict"] == "FAIL"
++    assert failed["best"]["kind"] == "baseline"
++    result = submit(campaign, version="accepted", a=95, b=102, quality=0.005,
++                    score_unit="fraction")
+     attempt = result["latest_observation"]
+     assert attempt["assessment"]["verdict"] == "PASS"
+     log = events(campaign, attempt)
+@@ -356,17 +365,22 @@ def test_incomplete_baseline_prevents_candidate_search(campaign):
+ def test_baseline_comparison_quality_and_pause_resume(campaign):
+     config = settings()
+     config["quality"].pop("threshold")
+-    config["quality"].update(mode="baseline_comparison", tolerance=0)
++    config["quality"].update(mode="baseline_comparison", direction="minimize", unit="%",
++                             tolerance=0.5)
+     config["stagnation"] = {"rounds": 1, "action": "pause"}
+     campaign["config"].write_text(json.dumps(config))
++    commit(campaign["repo"], quality=0.5, score_unit="%")
+     begin(campaign)
+-    result = submit(campaign, version="worse-quality", a=90, quality=0)
++    result = submit(campaign, version="worse-quality", a=90, quality=0.02, score_unit="fraction")
+     assert result["state"] == "paused"
+     assert result["latest_observation"]["assessment"]["quality_passed"] is False
+     resumed = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     repeated = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     assert resumed["stagnation"] == repeated["stagnation"]
+     assert resumed["state"] == "active"
++    accepted = submit(campaign, version="improved", a=90, quality=0.005, score_unit="fraction")
++    assert accepted["latest_observation"]["assessment"]["verdict"] == "PASS"
++    assert accepted["latest_observation"]["execution"]["quality_score"] == 0.5
+ 
+ 
+ def test_accepted_but_unselected_candidate_keeps_its_verdict(campaign):
+@@ -658,6 +672,7 @@ def test_existing_quality_reference_is_reused_only_when_compatible(campaign, com
+         "run_id": "previous-run",
+         "dataset": "synthetic",
+         "scorer": "exact-v1" if compatible else "incompatible-scorer",
++        "unit": "points",
+         "samples": 2,
+         "quality": 1,
+     }
+@@ -686,7 +701,7 @@ def test_reference_refresh_uses_baseline_cache_without_testing_parent_quality(
+     reference = {
+         "status": "completed", "revision": revision, "conditions": config["conditions"],
+         "service_id": "previous-service", "run_id": "previous-run",
+-        "dataset": "synthetic", "scorer": "exact-v1", "samples": 2, "quality": 1,
++        "dataset": "synthetic", "scorer": "exact-v1", "unit": "points", "samples": 2, "quality": 1,
+     }
+     protocol = Path(campaign["start"][campaign["start"].index("--protocol") + 1])
+     (protocol / "reference.json").write_text(json.dumps(reference))
+@@ -1500,7 +1515,7 @@ def test_standalone_capture_leaves_search_budget_and_reserve_intact(campaign, mo
+ def test_paired_and_explanation_switches_are_refused_in_service_mode(campaign, switch):
+     # Both switches read AB/BA pairs and profiles; service reuse must not silently drop them.
+     with pytest.raises(SystemExit):
+-        main([*campaign["start"], *switch])
++        main(preparation_arguments([*campaign["start"], *switch]))
+     campaign["capsys"].readouterr()
+     assert not (campaign["root"] / "plan.json").exists()
+ 
+@@ -1518,3 +1533,210 @@ def test_mechanism_declaration_is_refused_in_service_mode(campaign, tmp_path):
+     campaign["capsys"].readouterr()
+     state = json.loads((campaign["root"] / "state.json").read_text())
+     assert state["pending"] is None and not state.get("attempts", [])[1:]
 +
 +
-+def test_service_planning_brief_marks_quality_inputs_provisional(campaign):
-+    from inferrsi.apps.cli import task_intake
++def test_service_start_compares_approved_gates_and_full_configuration(campaign):
 +    from tests.fixtures.campaign_intake import approved_start
 +
-+    cfg = settings()
-+    cfg["quality"].pop("threshold")
-+    cfg["quality"].update(mode="baseline_comparison", tolerance=0.1)
-+    campaign["config"].write_text(json.dumps(cfg))
-+    args = approved_start(campaign["start"], overrides={"protocol.quality_unit": "points"})
-+    path = Path(args[-1])
-+    record = task_intake.read_record(path)
-+    record.pop("campaign_launch")
-+    record.pop("brief_decision")
-+    task_intake.write_record(path, record)
-+    planning, _ = task_intake.campaign_gate(path)
-+    brief = planning["task_brief"]
-+    assert brief["quality_gate_status"] == "provisional"
-+    assert "Provisional service quality inputs: quality, 0.1 points" in task_intake.render(planning)
-+    assert "quality >= 0.1" not in brief["quality_gate"]
-+    assert main([*args, "--prepare-intake"]) == 0
-+    prepared = json.loads(campaign["capsys"].readouterr().out)
-+    assert prepared["brief_review"] == "awaiting_confirmation"
-+    assert prepared["task_brief"]["id"] != brief["id"]
-+    assert "quality >= baseline quality - 0.1 points" in prepared["task_brief"]["quality_gate"]
-+    assert not campaign["root"].exists()
-diff --git a/tests/apps/test_session_ranking_policy.py b/tests/apps/test_session_ranking_policy.py
-index 2b5b0b61a..13c2ed327 100644
---- a/tests/apps/test_session_ranking_policy.py
-+++ b/tests/apps/test_session_ranking_policy.py
-@@ -167,7 +167,8 @@ def test_project_assessor_uses_the_same_measurements_quality_and_threshold(proje
-         assert assessment["verdict"] == "PASS" and assessment["quality_passed"]
-         directory = arm[-1] / read(arm[-1] / "state.json")["rounds"][0]["path"]
-         samples = {p.parent.name: read(p) for p in (directory / "execution").glob("*/result.json")}
--        assert {"metric": 20} in samples.values() and {"correct": True} in samples.values()
-+        assert {"metric": 20} in samples.values()
-+        assert {"correct": True, "dataset": "fixture-exact-v1"} in samples.values()
-         evidence.append((read(arm[-1] / "plan.json")["evaluation_settings"], samples,
-                          assessment["verdict"], assessment["score"], assessment["quality_passed"]))
-     assert evidence[0] == evidence[1]
-diff --git a/tests/apps/test_task_intake.py b/tests/apps/test_task_intake.py
-new file mode 100644
-index 000000000..4a9776b40
---- /dev/null
-+++ b/tests/apps/test_task_intake.py
-@@ -0,0 +1,816 @@
-+"""intake/v1: spec validation, question selection, answers, conflicts and the campaign gate."""
-+
-+from __future__ import annotations
-+
-+import hashlib
-+import json
-+from pathlib import Path
-+
-+import pytest
-+
-+from inferrsi.apps import cli
-+from inferrsi.apps.cli import intake_contract as intake
-+from inferrsi.apps.cli import task_intake
-+from tests.apps.test_project_optimization import project, start_arguments  # noqa: F401
-+from tests.fixtures.campaign_intake import approved_start
-+
-+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "intake"
-+PERFORMANCE = FIXTURES / "performance"
-+COMPLETE = json.loads((PERFORMANCE / "complete.json").read_text(encoding="utf-8"))
-+PARTIAL = json.loads((PERFORMANCE / "partial.json").read_text(encoding="utf-8"))
-+ALL_VALUES = {**COMPLETE["fields"]["values"], **COMPLETE["acceptance"]["values"]}
-+
-+
-+def spec_for(task: str = "task-performance") -> dict:
-+    return task_intake.load_spec(task)
-+
-+
-+def build(paths: set[str] | None = None, *, task: str = "task-performance") -> dict:
-+    """A record built from the complete fixture, optionally restricted to ``paths``."""
-+    spec = spec_for(task)
-+    record = intake.new_record(task, record_id="intake-test")
-+    if task == "task-performance":
-+        chosen = {path: value for path, value in ALL_VALUES.items()
-+                  if paths is None or path in paths}
-+        stated = {path: value for path, value in chosen.items()
-+                  if path in COMPLETE["fields"]["values"]}
-+        accepted = {path: value for path, value in chosen.items()
-+                    if path in COMPLETE["acceptance"]["values"]}
-+        if stated:
-+            record = intake.set_fields(record, spec, stated, source="prompt")
-+        if accepted:
-+            accepted[intake.REFERENCE] = ALL_VALUES[intake.REFERENCE]
-+            record = intake.set_fields(record, spec, accepted, source="issue")
-+    return record
-+
-+
-+def ask(record: dict, spec: dict, frozen: dict | None = None) -> tuple[dict, dict]:
-+    """Evaluate and persist the open questions, as the CLI does."""
-+    view = intake.evaluate(record, spec, frozen=frozen)
-+    record = json.loads(json.dumps(record))
-+    record["open_questions"] = view["questions"]
-+    return record, view
-+
-+
-+def batch_paths(spec: dict, batch: int) -> set[str]:
-+    return {field["path"] for field in spec["fields"] if field.get("batch", 1) == batch}
-+
-+
-+def test_packaged_specs_validate_and_declare_their_targets():
++    args = approved_start(campaign["start"])
++    original = json.loads(campaign["config"].read_bytes())
++    changed = settings()
++    changed["quality"]["threshold"] = 0
++    campaign["config"].write_text(json.dumps(changed))
++    assert main(args) == 2
++    blocked = json.loads(campaign["capsys"].readouterr().out)
++    assert blocked["reason"] == "launch_conflict"
++    assert blocked["conflicts"][0]["field"] == "protocol.quality_limit"

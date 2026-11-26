@@ -1,128 +1,114 @@
-+      "type": "text",
-+      "question": "Which engine revision and target device must run the model?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.first_scope",
-+      "maps_to": "day0-spec",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which modalities or features must the first supported scope cover?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.reference_implementation",
-+      "maps_to": "day0-spec",
-+      "batch": 2,
-+      "type": "text",
-+      "question": "Which reference implementation produces the expected outputs?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.replayable_inputs",
-+      "maps_to": "day0-spec",
-+      "batch": 2,
-+      "type": "text",
-+      "question": "Which replayable inputs and fixtures anchor the stage-by-stage comparison?",
-+      "required_before": ["device_execution"]
-+    },
-+    {
-+      "path": "day0.consistency_criteria",
-+      "maps_to": "day0-spec",
-+      "batch": 2,
-+      "type": "text",
-+      "question": "Which numeric or output-consistency criteria define supported behavior per stage?",
-+      "required_before": ["device_execution"]
-+    }
-+  ]
-+}
-diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
-index 76b25ae7c..9216d73ba 100644
---- a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
-+++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
-@@ -34,12 +34,52 @@ metadata:
+         raise ValueError("Missing numerical quality evidence")
+-    return score
++    return quality_score_in_unit(score, document.get("unit"), config.get("unit"))
  
- ## Capture the actual run
  
-+First evaluate a fresh `task-performance` intake record using only information the
-+user stated. A generic optimization request leaves the objective, metric and
-+quality check open, even in a repository with existing benchmarks. Before building
-+or measuring, run `task intake evaluate --task task-performance --record <record.json>
-+--json`. When questions are returned, call the host's native question-card tool now
-+(on Codex Desktop, `request_user_input_async` when available). Ask the user which
-+outcome and quality check to use. Present repository-derived options as suggestions.
-+Use numbered questions if the host lacks cards. Wait for an actual reply, including
-+after an asynchronous card is accepted for display. A new local gate file or a
-+source label cannot stand in for the user's selection of an acceptance reference.
-+
- Record the hardware vendor, device SKU, backend and driver, OS, model family and
- checkpoint revision, engine and plugin versions, and the exact run script and
- flags. Attach the benchmark inputs, workload shape, dtype, reference or quality
- oracle, and the user's acceptance criteria. Write down the current diagnosis
- and its supporting observation, allowed search space, and remaining budget.
--Mark missing fields as unknown and request the first one that affects a decision.
-+Mark missing fields as unknown and open the shared intake record
-+(`task intake evaluate --task task-performance`); ask only the questions it
-+returns. A field answered `unknown` blocks its stage instead of being asked
-+again. Do not derive a threshold from a request such as "make it faster": the
-+acceptance issue or frozen plan states it.
-+
-+## Read back the task brief and obtain approval
-+
-+Collect the final **numeric** performance goal (absolute bound with units, or
-+minimum percentage improvement over the pinned baseline), performance workload
-+and timing boundary. Confirm the accuracy benchmark and split, metric,
-+comparison, numeric threshold and unit, plus the quality check and failure
-+policy. A candidate retention threshold alone does not specify a final target.
-+
-+For a measured campaign, prepare the intended invocation **before** the final
-+card: run `campaign start --prepare-intake --intake <record.json>` with the
-+actual launch options. Resolve any reported mismatch. Include the returned
-+`task_brief.campaign_launch` settings in the read-back. Preparation starts no
-+measurements. A planning-only brief can be reviewed without a launch.
-+
-+When intake returns `brief_review: awaiting_confirmation`, read back the complete
-+`task_brief` in the user's language, including the target and accuracy
-+inequalities, benchmark, pinned setup, commands, scope, comparison and budget.
-+Then call the native question-card tool for a **separate** approve-or-revise
-+decision on that brief. Wait for a new explicit reply. Use `task intake answer`
-+with this revision's `q:task_brief:...` ID. Record requested changes, update the
-+fields and read back the new brief for fresh approval. Until approval, only
-+read-only preparation is allowed, even if the user answered every field or
-+selected an existing acceptance plan. Hand the approved record to `campaign
-+start --intake`; apply the approved conditions to the validator and final replay.
+ def quality_passed(settings, score, reference=None):
+@@ -356,7 +358,8 @@ def quality_passed(settings, score, reference=None):
+         return sign * (score - config["threshold"]) >= 0
+     if reference is None or not number(reference):
+         raise ValueError("Missing compatible baseline quality reference")
+-    return sign * (score - reference) >= -config["tolerance"]
++    delta = Decimal(str(score)) - Decimal(str(reference))
++    return sign * delta >= -Decimal(str(config["tolerance"]))
  
- ## Run the procedure
  
-diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json
+ def revision(source, includes):
+@@ -858,12 +861,29 @@ def evaluate(role):
+             if parent is not None
+             else {"passed": True, "metrics": {}}
+         )
++        target = None
++        if role == "candidate" and "candidate_min_improvement_pct" in plan:
++            target = {"target_kind": "relative_improvement_pct",
++                      "target_value": plan["candidate_min_improvement_pct"]}
++        elif role == "final":
++            target = plan.get("performance_target")
++        if target and gate["passed"]:
++            name = settings["ranking"][0]
++            objective = next(obj for obj in settings["objectives"] if obj["id"] == name)
++            gate["passed"] = meets_target(
++                target, baseline=initial["measurements"]["values"][name],
++                candidate=measured["values"][name], direction=objective["direction"])
++            if gate["passed"] is None:
++                raise ValueError("Undefined relative performance target against the baseline")
++            if not gate["passed"]:
++                gate["reason"] = ("final_performance_target_not_met" if role == "final"
++                                  else "performance_gate_not_met")
+         if not gate["passed"]:
+             skipped(("quality",), "performance_gate_not_met")
+             if role != "candidate":
+                 skipped(("profile",), "not_required")
+             record["assessment"] = assessment(
+-                "FAIL", "performance_gate_not_met", performance=gate
++                "FAIL", gate["reason"], performance=gate
+             )
+         elif pending.get("reference_kind") == "parent":
+             skipped(("quality", "profile"), "performance_reference_only")
+diff --git a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
+index 3abf1a04e..3e2192c56 100644
+--- a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
++++ b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
+@@ -1,7 +1,7 @@
+ {
+   "schema_version": 1,
+   "repository": "https://github.com/InferMatrixLab/InferRSI",
+-  "source_revision": "bf14fec0bd909efcfeb2bc02d69fe227d0c51ce6",
++  "source_revision": "6f5775d29d3546732113900ef811d60a5943aa62",
+   "registry": {
+     "path": "src/inferrsi/knowledge/data/skill_library/skill-index.json",
+     "sha256": "d243e2ae44c7badc8e68788153de35fe6ac31de618b7499fef6339eadf396871"
+diff --git a/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json b/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
+index 93037ddac..4fc6071a2 100644
+--- a/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
++++ b/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
+@@ -614,7 +614,7 @@
+       "description": "Select the starting route for day-0 model support, inference performance optimization, debugging, accuracy repair, version alignment, derived-engine development or independent runtime bring-up."
+     },
+     "files": {
+-      "SKILL.md": "3dae791f61b26810332e05fbabe6fd7113abf9ed8609aef663535a267525849c",
++      "SKILL.md": "ea7b823fd4b4e00531356649ef0963854a93cf958db2880efdceec870d6f0c5c",
+       "references/routes/accuracy.json": "5a672842ec26262d8827f7ce8d92de9bd956859ff5244189c0519b8f0dd188e3",
+       "references/routes/day0-model.json": "77b26d1300e5535d8b595cef95c6c803ea1322e92f38b68ae2905f69355a814f",
+       "references/routes/debug.json": "75241e43d12fb961d3f48d1b683e4df321c0f18e683959aedca9722e78a8b78f",
+@@ -1168,7 +1168,8 @@
+       "description": "Use for Day-0 onboarding of a new checkpoint or architecture to a named inference engine. Produce a reproducible target run, stage parity evidence and a regression fixture."
+     },
+     "files": {
+-      "SKILL.md": "ca187de2205b3aa86b4ca5123fb0107a8235aa84f9d942d3771a8a665df1a0a3"
++      "SKILL.md": "ca187de2205b3aa86b4ca5123fb0107a8235aa84f9d942d3771a8a665df1a0a3",
++      "intake.json": "14ebe6f94888b17a06970ac7729ebd14f19c73c2de50ee16100c6eced85b0bbc"
+     }
+   },
+   "task-debug": {
+@@ -1204,7 +1205,8 @@
+       "description": "Use when a correct inference baseline misses a latency, throughput, memory or cost target. Compare compatible changes under the user's workload and quality gate."
+     },
+     "files": {
+-      "SKILL.md": "bf5a137504566b6ee4eeaee18400d52aae99a1db3c8247dea7247d653103df0b"
++      "SKILL.md": "46b44df9d2b6b91ae305df21536d9cf04903b3ea442b0413b3f2319452faafb9",
++      "intake.json": "13ecae20885d7ea07bbb00b84be3481f4a825590e2e4044abd6cdb2d6bcaf680"
+     }
+   },
+   "task-version-alignment": {
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md b/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
+index d7ff9c811..cc1db9035 100644
+--- a/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
+@@ -43,6 +43,8 @@ metadata:
+ 
+ Choose one primary skill by the requested deliverable. Load its full procedure
+ before the first supporting evidence search. Record secondary tasks for follow-up.
++When two primary skills remain plausible after reading the request, ask the user
++which deliverable they want before loading either; do not guess a route.
+ The route cards remain available to callers that consume the JSON summaries.
+ 
+ | Primary skill | Choose it when | Route card |
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json
 new file mode 100644
-index 000000000..8a419ac33
+index 000000000..d01200c5b
 --- /dev/null
-+++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json
-@@ -0,0 +1,309 @@
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json
+@@ -0,0 +1,63 @@
 +{
 +  "schema_version": 1,
-+  "task": "task-performance",
-+  "description": "Confirmation fields for a performance-optimization round. Questions are asked only for fields that block the next stage; acceptance values stated outside an acceptance issue or frozen task file stay proposals.",
-+  "fields": [
-+    {
-+      "path": "optimization.objective",
-+      "user_choice": true,
-+      "maps_to": "task-input/v1",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which outcome decides this round?",
-+      "required_before": ["baseline_measurement", "candidate_search"]
-+    },
-+    {
-+      "path": "acceptance.metric_key",
-+      "maps_to": "task-input/v1",
-+      "batch": 1,
-+      "type": "text",
-+      "question": "Which metric decides this round?",
-+      "options": [
-+        {"value": "p95_ttft", "hint": "client-observed p95 time to first token"},
-+        {"value": "throughput", "hint": "requests completed per second under the fixed load"},
-+        {"value": "p95_tpot", "hint": "p95 time per output token"},
-+        {"value": "peak_memory", "hint": "peak device memory under the fixed load"}
-+      ],
