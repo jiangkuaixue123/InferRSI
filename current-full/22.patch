@@ -1,0 +1,90 @@
++    reference = intake.selected_reference(record)
++    reference_path = selected_path or (Path(reference) if reference else None)
++    if frozen_path and reference and reference_path.resolve() == frozen_path.resolve():
++        snapshot = {"reference": reference, "values": frozen}
++        if selecting_reference:
++            record["selected_gate"] = snapshot
++            record["selected_gate_file"] = str(frozen_path.resolve())
++        if record.get("selected_gate") == snapshot:
++            matching = {}
++            for field in spec["fields"]:
++                key = field["path"]
++                entry = record["fields"].get(key, {})
++                if key in frozen and entry.get("status") != "conflicting":
++                    if entry.get("value") in (None, frozen[key]):
++                        matching[key] = frozen[key]
++            record = intake.set_fields(record, spec, matching, source="frozen_gate")
++        else:
++            record.pop("selected_gate", None)
++            record.pop("selected_gate_file", None)
++            record.pop("brief_decision", None)
++            record.pop("campaign_launch", None)
++            record["fields"][intake.REFERENCE] = {
++                "value": reference, "source": "repo_inspection", "status": "assumed",
++            }
++            record["revision"] += 1
++    return record, frozen
++
++
++def _evaluate_and_save(path: Path, record: dict, spec: dict, frozen_path: Path | None,
++                       *, selecting_reference: bool) -> dict:
++    record, frozen = _evaluate_gate(record, spec, frozen_path,
++                                    selecting_reference=selecting_reference)
++    view = intake.evaluate(record, spec, frozen=frozen)
++    _persist(path, record, view)
++    return view
++
++
++def evaluate_command(args) -> dict:
++    record_path = Path(args.record)
++    existing = record_path.is_file()
++    if existing:
++        record = read_record(record_path)
++    else:
++        if not args.task:
++            raise intake.IntakeError(
++                "missing_task", "the record does not exist yet; pass --task")
++        record = intake.new_record(args.task, record_id="intake-" + uuid.uuid4().hex[:12])
++    if args.task and args.task != record["task"]:
++        raise intake.IntakeError(
++            "task_mismatch", f"the record already records {record['task']}, not {args.task}")
++    spec = load_spec(record["task"])
++    record = intake.reconcile_record(record, spec)
++    values = parse_sets(args.set)
++    selecting = intake.REFERENCE in values and args.source in ("prompt", "grilling_brief")
++    bind_file = selecting and not existing
++    if existing and selecting and intake.selected_reference(record) != values[intake.REFERENCE]:
++        if intake.evaluate(record, spec)["brief_review"] != "changes_requested":
++            raise intake.IntakeError("user_answer_required",
++                                     "Use the reference question to record the user's reply")
++        previous = intake.selected_reference(record)
++        record["fields"] = {key: entry for key, entry in record["fields"].items()
++                            if key != intake.REFERENCE and not (
++                                previous and entry.get("authority_reference") == previous)}
++        record.pop("selected_gate", None)
++        record.pop("selected_gate_file", None)
++        bind_file = True
++    if values:
++        record = intake.set_fields(record, spec, values, source=args.source)
++    return _evaluate_and_save(record_path, record, spec, args.frozen,
++                              selecting_reference=bind_file)
++
++
++def answer_command(args) -> dict:
++    record_path = Path(args.record)
++    record = read_record(record_path)
++    spec = load_spec(record["task"])
++    record = intake.answer(record, spec, question_id=args.question,
++                           value=args.value, unknown=bool(args.unknown))
++    selected = record["fields"].get(intake.REFERENCE, {}).get("source") == f"answer:{args.question}"
++    return _evaluate_and_save(record_path, record, spec, args.frozen, selecting_reference=selected)
++
++
++def summary_command(args) -> dict:
++    record = read_record(Path(args.record))
++    spec = load_spec(record["task"])
++    record, frozen = _evaluate_gate(record, spec, args.frozen, selecting_reference=False)
++    return intake.summary(record, spec, frozen=frozen)
++
++
++def campaign_gate(path: Path, *, expected_task: str = "task-performance",

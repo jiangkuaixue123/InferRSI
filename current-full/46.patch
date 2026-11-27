@@ -1,0 +1,78 @@
++    assert not project[3].exists()
++
++    record = json.loads(record_path.read_text())
++    for field in record["fields"].values():
++        field["status"] = "confirmed"
++    record.update(complete=True, open_questions=[], allowed_next=["candidate_search"])
++    record_path.write_text(json.dumps(record))
++    assert task_intake.campaign_gate(record_path)[0]["status"] == "blocked"
++
++
++def test_selected_gate_imports_only_its_values_and_changed_file_reopens_card(tmp_path, capsys):
++    record = tmp_path / "record.json"
++    gate = tmp_path / "gate.yaml"
++    gate.write_bytes((PERFORMANCE / "frozen-gate.yaml").read_bytes())
++    cmd = ["task", "intake", "evaluate", "--record", str(record), "--json"]
++    assert cli.main([*cmd, "--task", "task-performance"]) == 0
++    capsys.readouterr()
++    reference_card = card_id(task_intake.read_record(record), intake.REFERENCE)
++    answer = ["task", "intake", "answer", "--record", str(record), "--question",
++              reference_card, "--value", str(gate), "--frozen", str(gate), "--json"]
++    assert cli.main(answer) == 0
++    view = json.loads(capsys.readouterr().out)
++    assert view["fields"]["acceptance.metric_key"]["status"] == "confirmed"
++    assert view["fields"][intake.REFERENCE]["source"] == "answer:" + reference_card
++    assert cli.main([*cmd, "--source", "frozen_gate", "--set",
++                     "acceptance.min_improvement_pct=99"]) == 0
++    assert json.loads(capsys.readouterr().out)["fields"]["acceptance.min_improvement_pct"][
++        "value"] == 10
++
++    gate.write_bytes((PERFORMANCE / "frozen-mismatch.yaml").read_bytes())
++    assert cli.main([*cmd, "--frozen", str(gate)]) == 0
++    view = json.loads(capsys.readouterr().out)
++    assert any(q["field"] == intake.REFERENCE for q in view["questions"])
++    assert view["fields"]["acceptance.metric_key"]["status"] == "assumed"
++    assert task_intake.campaign_gate(record)[0]["status"] == "blocked"
++
++
++def test_fully_specified_request_still_needs_final_card(tmp_path, capsys):
++    gate = PERFORMANCE / "frozen-gate.yaml"
++    record = tmp_path / "record.json"
++    values = {**COMPLETE["fields"]["values"], intake.REFERENCE: str(gate)}
++    args = ["task", "intake", "evaluate", "--task", "task-performance", "--record",
++            str(record), "--frozen", str(gate), "--json"]
++    for key, value in values.items():
++        args.extend(("--set", f"{key}={value}"))
++    assert cli.main(args) == 0
++    result = json.loads(capsys.readouterr().out)
++    assert not result["complete"] and result["needs_user_input"]
++    assert result["brief_review"] == "awaiting_confirmation"
++    assert task_intake.campaign_gate(record)[0]["status"] == "blocked"
++    assert cli.main(["task", "intake", "answer", "--record", str(record), "--question",
++                     result["task_brief"]["id"], "--value", "approve", "--json"]) == 0
++    assert json.loads(capsys.readouterr().out)["complete"]
++    assert task_intake.campaign_gate(record)[0]["status"] == "ready"
++
++
++def test_user_can_replace_suggested_goal_and_settle_a_conflict():
++    spec = spec_for()
++    record = intake.new_record("task-performance", record_id="intake-suggested")
++    record = intake.set_fields(record, spec, {"optimization.objective": "throughput"},
++                               source="repo_inspection")
++    record, _ = ask(record, spec)
++    record = intake.answer(record, spec, question_id=card_id(record, "optimization.objective"),
++                           value="latency")
++    assert record["fields"]["optimization.objective"]["value"] == "latency"
++    assert record["fields"]["optimization.objective"]["status"] == "confirmed"
++    record = intake.set_fields(record, spec, {"optimization.objective": "memory"}, source="prompt")
++    record, view = ask(record, spec)
++    assert view["questions"][0]["field"] == "optimization.objective"
++    record = intake.answer(record, spec, question_id=card_id(record, "optimization.objective"),
++                           value="latency")
++    assert record["fields"]["optimization.objective"]["status"] == "confirmed"
++
++@pytest.mark.parametrize("path", ["protocol.target_value", "protocol.quality_limit",
++                                  "protocol.quality_benchmark", "protocol.quality_unit"])
++def test_numeric_targets_and_benchmark_require_user_selection(path):
++    spec = spec_for()
++    record = build(set(ALL_VALUES) - {path})

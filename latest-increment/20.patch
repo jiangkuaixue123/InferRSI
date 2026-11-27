@@ -1,0 +1,37 @@
+-        tmp_path, plan, final
+-    ) == "unverifiable_evaluation_evidence"
++        target.write_text(json.dumps(document), encoding="utf-8")
++
++    def stage(name, **document):
++        write(f"execution/{name}/result.json", dict(document, binding=binding, status="completed"))
++
++    write("request.json", binding)
++    write("effective-config.json", {})
++    write("service/owner.json", dict(binding, cwd="fixture", pid=123))
++    stage("precheck", passed=True)
++    stage("ready", ready=True, ownership="local_process_domain", owner_pid=123,
++          loaded_root="fixture", loaded_revision=record["revision"])
++    stage("measure-001", **measure)
++
++    gate = evaluator.service_trial_gate(plan, record, measured)
++    decision = evaluator.service_measurement_decision("final", None, gate, config["quality"])
++    score = None
++    if decision.assessment is None:
++        receipt = {"errors": 0.005, "unit": "fraction", "dataset": "fixture",
++                   "scorer": "test-scorer", "samples": 1}
++        stage("quality", **receipt)
++        score = evaluator.service_quality_score(config, receipt)
++        quality_ok = evaluator.service_quality_passed(config, score, initial["quality_score"])
++        decision = evaluator.service_quality_decision("final", gate, quality_ok)
++    assert decision.assessment["verdict"] == verdict
++    record.update(assessment=decision.assessment, execution={
++        "binding": binding, "measurements": measured, "quality_score": score,
++    })
++    assert _service_evidence.evaluation_reason(tmp_path, plan, record) is None
++    record["assessment"]["performance"]["passed"] = verdict != "PASS"
++    assert _service_evidence.evaluation_reason(tmp_path, plan, record) == (
++        "unverifiable_evaluation_evidence"
++    )
+ 
+ 
+ def test_screening_actual_gain_is_not_an_estimated_or_formal_threshold():

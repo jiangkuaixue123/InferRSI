@@ -1,0 +1,116 @@
++            shutil.move(str(path), destination / path.name)
++        result = initialize(destination, plan)
++    except BaseException:
++        shutil.rmtree(destination)
++        raise
++    return {**result, "intake": receipt}
+diff --git a/src/inferrsi/apps/cli/intake_contract.py b/src/inferrsi/apps/cli/intake_contract.py
+new file mode 100644
+index 00000000..9b54ca46
+--- /dev/null
++++ b/src/inferrsi/apps/cli/intake_contract.py
+@@ -0,0 +1,819 @@
++"""intake/v1: host-independent task intake records for missing-field confirmation.
++
++A card, a numbered text fallback and an optional check-in interview all write the
++same record. The record separates what the user stated (``confirmed``), what a
++card answer proposes (``proposed``), what stays unknown (``unknown``) and what
++conflicts (``conflicting``). ``evaluate`` selects the questions that unblock the
++next stage, derives ``allowed_next`` and never authenticates acceptance
++thresholds: a proposal kept in a record does not freeze a gate.
++
++The contract performs no I/O. Mapped numeric values use the task-input validator. Callers in
++``inferrsi.apps.cli.task_intake`` load the versioned spec and record, then call these
++pure functions. ``source`` is declared by the caller and is not authenticated.
++"""
++
++from __future__ import annotations
++
++import copy
++import hashlib
++import json
++import math
++
++from ...harness.evaluator import validate_quality_unit
++from . import task_input
++
++SCHEMA_VERSION = 1
++QUALITY_UNIT = "protocol.quality_unit"
++
++STAGES = (
++    "read_only_preparation",
++    "baseline_measurement",
++    "candidate_search",
++    "service_execution",
++    "device_execution",
++)
++BLOCKING_STAGES = STAGES[1:]
++
++MAP_TARGETS = ("task-input/v1", "campaign-protocol", "session-protocol",
++               "summary-only", "day0-spec")
++
++STATUSES = ("confirmed", "proposed", "assumed", "unknown", "conflicting",
++            "stale", "superseded")
++SETTLED = ("confirmed", "proposed")
++BLOCKING = ("unknown", "assumed", "conflicting", "stale", "superseded")
++
++ACCEPTANCE = "acceptance."
++AUTHORITATIVE = ("issue", "frozen_gate")
++REFERENCE = "acceptance.reference"
++
++_QUESTION = "q:"
++_BRIEF_QUESTION = "q:task_brief:"
++
++
++class IntakeError(ValueError):
++    """A record, spec or answer is rejected; ``code`` names the recorded reason."""
++
++    def __init__(self, code: str, message: str):
++        super().__init__(message)
++        self.code = code
++
++
++def _canonical(value: object) -> str:
++    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
++
++
++def _field_paths(spec: dict) -> dict[str, dict]:
++    return {field["path"]: field for field in spec["fields"]}
++
++
++def validate_spec(spec: object) -> list[dict]:
++    """Return field-level problems in a packaged intake spec, in spec order."""
++    problems: list[dict] = []
++
++    def bad(path: str, message: str) -> None:
++        problems.append({"field": path, "message": message})
++
++    if not isinstance(spec, dict):
++        return [{"field": "$", "message": "must be an object"}]
++    if spec.get("schema_version") != SCHEMA_VERSION:
++        bad("schema_version", f"must be {SCHEMA_VERSION}")
++    if not isinstance(spec.get("task"), str) or not spec["task"].strip():
++        bad("task", "must be a non-empty string")
++    fields = spec.get("fields")
++    if not isinstance(fields, list) or not fields:
++        bad("fields", "must be a non-empty array")
++        return problems
++    seen: set[str] = set()
++    for index, field in enumerate(fields):
++        where = f"fields[{index}]"
++        if not isinstance(field, dict):
++            bad(where, "must be an object")
++            continue
++        path = field.get("path")
++        if not isinstance(path, str) or not path.strip():
++            bad(f"{where}.path", "must be a non-empty string")
++        elif path in seen:
++            bad(f"{where}.path", f"duplicates {path}")
++        else:
++            seen.add(path)
++        if field.get("maps_to") not in MAP_TARGETS:
++            bad(f"{where}.maps_to", f"must be one of {', '.join(MAP_TARGETS)}")
++        if (field.get("maps_to") == "task-input/v1" and field.get("type") in ("integer", "number")
++                and isinstance(path, str) and path not in task_input.BY_PATH):
++            bad(f"{where}.path", f"{path} is not a task-input/v1 field")
++        if not isinstance(field.get("question"), str) or not field["question"].strip():

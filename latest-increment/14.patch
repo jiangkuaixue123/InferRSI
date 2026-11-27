@@ -1,0 +1,114 @@
+       "required_before": ["baseline_measurement"]
+     },
+     {
+@@ -172,7 +172,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 2,
+       "type": "text",
+-      "question": "Which prepared repository is the baseline checkout?",
++      "question": "Which project checkout supplies the baseline inputs and receives the candidate changes?",
+       "required_before": ["baseline_measurement"]
+     },
+     {
+@@ -180,7 +180,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 2,
+       "type": "text",
+-      "question": "Which model identity or path does the run load?",
++      "question": "Which model identifier or local model path should the run load?",
+       "required_before": ["baseline_measurement"]
+     },
+     {
+@@ -188,7 +188,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 2,
+       "type": "text",
+-      "question": "Which model revision is pinned?",
++      "question": "Which exact model or checkpoint revision should both sides load?",
+       "required_before": ["candidate_search"]
+     },
+     {
+@@ -196,7 +196,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 2,
+       "type": "text",
+-      "question": "Which engine or framework serves the model?",
++      "question": "Which inference engine or framework runs the model?",
+       "required_before": ["baseline_measurement"]
+     },
+     {
+@@ -204,7 +204,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 2,
+       "type": "text",
+-      "question": "Which backend runs the workload?",
++      "question": "Which execution backend should the benchmark use?",
+       "required_before": ["baseline_measurement"]
+     },
+     {
+@@ -212,7 +212,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 2,
+       "type": "text",
+-      "question": "Which device SKU or chip must the measurement use?",
++      "question": "Which device SKU should run the measurements?",
+       "required_before": ["baseline_measurement"]
+     },
+     {
+@@ -221,7 +221,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 2,
+       "type": "text",
+-      "question": "Which fixed workload, input set and concurrency replay for every trial?",
++      "question": "Which requests, input shapes and concurrency should both sides replay?",
+       "required_before": ["baseline_measurement"]
+     },
+     {
+@@ -229,7 +229,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 2,
+       "type": "text",
+-      "question": "Which command runs the unchanged baseline?",
++      "question": "Which exact command measures the unchanged baseline under that workload?",
+       "required_before": ["baseline_measurement"]
+     },
+     {
+@@ -238,7 +238,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 2,
+       "type": "integer",
+-      "question": "How many repetitions and warmups should each side run?",
++      "question": "How many measured repetitions should the baseline run? Provide a positive integer.",
+       "required_before": ["baseline_measurement"]
+     },
+     {
+@@ -247,7 +247,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 2,
+       "type": "number",
+-      "question": "What time budget bounds the whole round?",
++      "question": "How many minutes may the entire campaign use, including its final replay?",
+       "required_before": ["baseline_measurement"]
+     },
+     {
+@@ -256,10 +256,10 @@
+       "maps_to": "campaign-protocol",
+       "batch": 3,
+       "type": "choice",
+-      "question": "How should baseline and candidate trials be compared?",
++      "question": "Should this round alternate baseline and candidate trials or use the service-reuse protocol?",
+       "options": [
+         {"value": "abba", "hint": "alternate unchanged baseline and candidate under the same conditions"},
+-        {"value": "service_reuse", "hint": "keep one owned service and reuse it across retained candidates"}
++        {"value": "service_reuse", "hint": "reuse one owned service within an attempt, then stop it before the next attempt"}
+       ],
+       "required_before": ["candidate_search"]
+     },
+@@ -269,7 +269,7 @@
+       "maps_to": "summary-only",
+       "batch": 3,
+       "type": "text",
+-      "question": "When is the reused service restarted, and which caches or state are cleared between candidates?",
++      "question": "How should the protocol start, warm up, measure and stop the owned service, and which state should it clear?",
+       "depends_on": ["protocol.comparison"],
+       "required_when": {"field": "protocol.comparison", "equals": "service_reuse"},

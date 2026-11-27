@@ -1,0 +1,81 @@
++3. Otherwise the lowest missing `batch` is asked as one batch. Answers to other
++   batches wait until earlier batches settle.
++4. `unknown` is a recorded answer: the field is not asked again, and it blocks
++   every stage named in `required_before`.
++5. Reply with the full ID returned on the displayed card. Its token binds the
++   record, field, dependencies and options at issuance. Re-evaluation keeps the
++   IDs of open, unchanged questions. A changed or reopened card receives a new
++   token. For a legacy field-only card, re-evaluate and present its new ID.
++   An answer is rejected as
++   `stale_answer` when the snapshot changed, as `already_answered` when the same
++   question was answered once, and as `unknown_question` when it was never
++   issued. A late reply to a superseded question changes nothing.
++
++## Acceptance boundary
++
++The user identifies the acceptance issue or gate file in the initial prompt, a
++confirmed interview brief or a subsequent card answer. A reference suggested by
++the workspace or by the gate file itself remains an open question. After intake
++has begun, record the user's selection with `answer`. The host is responsible for
++passing actual user input to the CLI. The CLI cannot authenticate conversation turns.
++
++For an issue, first record the user's reference, then include the same
++`--set acceptance.reference=<acceptance-issue>` with the issue's values and
++`--source issue`. For a frozen task file, pass `--frozen` when recording the
++user's selection. For example, after the user chooses the file on a card:
++
++```text
++inferrsi task intake answer --record <record.json> --question <returned-question-id> \
++    --value <gate.yaml> --frozen <gate.yaml>
++```
++
++The record retains the selected file's explicit acceptance values. Defaults and
++arbitrary `--set` values cannot fill missing gate fields. If the file is first
++presented later, or its acceptance contents change, evaluating it reopens the
++reference question. Conflicting metric values remain visible. Reconfirm the
++file and resolve conflicting proposals with the user before search.
++
++For mapped numeric fields, intake uses the task-input/v1 bounds. Repetitions
++and rounds must be positive integers, the time budget must be positive and at
++most seven days, and the minimum improvement percentage must be nonnegative.
++Invalid replies leave the question open. Older records with out-of-range values
++reopen those questions and require a fresh brief approval after correction.
++
++## Final performance brief
++
++A final goal has a metric, direction and numeric target. For an absolute
++target supply the bound in the metric unit. For a relative target supply the
++minimum percent improvement over the pinned baseline. The per-candidate
++retention rule remains a separate input. State the workload, accuracy benchmark
++and split, quality metric, comparison, numeric threshold and unit. Include the
++command that evaluates that condition. Repository findings are suggestions
++until the user chooses them.
++
++Once all applicable fields and acceptance sources are settled, `evaluate` or
++the last field `answer` returns a `task_brief`, `brief_review:
++awaiting_confirmation` and one revision-specific question. Read the **whole**
++brief back in the user's language and send a separate native approve-or-revise
++card. Hosts without cards use the same explicit decision in text. Record the
++reply against the exact question displayed:
++
++```text
++inferrsi task intake answer --record <record.json> --question <brief-question-id> --value approve
++```
++
++An explicit `revise` or unknown reply keeps work paused until edits and a new
++review. A missing reply leaves the card open. Capture corrections through intake,
++resolve any conflicts and present the revised brief before asking again. If the
++user selects a different acceptance reference after returning the brief, pass
++that correction to `evaluate --set acceptance.reference=...` with the new
++`--frozen` file when applicable. Intake discards values bound to the former
++authority.
++The question ID binds the record, field revision and applicable values.
++Evaluation and summary alone cannot grant approval. Measured work requires
++`brief_review: approved`. Older records are re-evaluated on use.
++
++## Campaign hand-off
++
++For an executable campaign, prepare the complete launch before presenting the
++final card. Pass the same project, protocol and budget options to both commands.
++
++```text

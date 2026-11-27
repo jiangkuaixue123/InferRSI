@@ -1,0 +1,98 @@
++                  frozen: dict | None = None) -> tuple[dict, dict]:
++    """Evaluate a record for ``campaign start``; return the gate and the record it read.
++
++    Never starts or measures anything. The caller retains the returned record, so the
++    bytes kept next to the campaign are the ones this gate evaluated.
++    """
++    record = read_record(Path(path))
++    if record.get("task") != expected_task:
++        raise intake.IntakeError(
++            "task_mismatch", f"{path} records {record.get('task')}, not {expected_task}")
++    spec = load_spec(expected_task)
++    record = intake.reconcile_record(record, spec)
++    record, selected = _evaluate_gate(record, spec, None, selecting_reference=False)
++    view = intake.evaluate(record, spec, frozen=frozen if frozen is not None else selected)
++    return {
++        "status": "ready" if view["complete"] else "blocked",
++        "task": expected_task,
++        "record": str(path),
++        "revision": record["revision"],
++        "complete": view["complete"],
++        "questions": view["questions"],
++        "brief_review": view["brief_review"],
++        "task_brief": view["task_brief"],
++        "blockers": view["blockers"],
++        "conflicts": view["conflicts"],
++        "allowed_next": view["allowed_next"],
++        "execution": "not started",
++    }, record
++
++
++def prepare_launch(path, record, launch):
++    if record.get("campaign_launch") != launch:
++        record["campaign_launch"] = launch
++        record.pop("brief_decision", None)
++        record["revision"] += 1
++    view = _evaluate_and_save(path, record, load_spec(record["task"]), None,
++                              selecting_reference=False)
++    return {**view, "status": "prepared", "execution": "not started"}
++
++
++def attach_record(session_dir: Path, record: dict, gate: dict) -> dict:
++    """Retain the gated record in the campaign directory and name its digest."""
++    digest = write_record(Path(session_dir) / "intake.json", record)
++    return {"intake": {
++        "record": "intake.json",
++        "task": record["task"],
++        "revision": record["revision"],
++        "sha256": digest,
++        "brief_id": gate["task_brief"]["id"],
++        "gate": gate["status"],
++    }}
++
++
++def _render_brief(view: dict) -> list[str]:
++    brief = view["task_brief"]
++    if not brief:
++        return []
++    return [f"Task brief (revision {brief['revision']}, {view['brief_review']})",
++            f"Performance target: {brief['performance_target']}",
++            f"Accuracy on {brief['benchmark']}: {brief['quality_gate']}",
++            *(f"  {key}: {value}" for key, value in brief["conditions"].items()),
++            *([json.dumps(brief["campaign_launch"], ensure_ascii=False, indent=2)]
++              if "campaign_launch" in brief else [])]
++
++
++def _render_questions(view: dict) -> list[str]:
++    lines = []
++    if view["questions"]:
++        lines.append("Ask the user the following questions using the host question-card tool. "
++                     "Wait for their reply before measurement or candidate work. "
++                     "Use numbered text when the tool is unavailable.")
++        lines.append("questions:")
++        for question in view["questions"]:
++            lines.append(f"  {question['id']}  {question['question']}")
++            for option in question["options"]:
++                hint = f"  ({option['hint']})" if option.get("hint") else ""
++                lines.append(f"      - {option['value']}{hint}")
++            lines.append("      - unknown  (record as unknown; dependent stages stay blocked)")
++    return lines
++
++
++def render(view: dict) -> str:
++    lines = [f"task: {view['task']}  revision: {view['revision']}  "
++             f"complete: {'true' if view['complete'] else 'false'}"]
++    lines.extend(_render_brief(view))
++    lines.extend(_render_questions(view))
++    if view["conflicts"]:
++        lines.append("conflicts:")
++        for item in view["conflicts"]:
++            lines.append(f"  {item['field']}: record {item.get('record_value')!r} vs "
++                         f"frozen {item.get('frozen_value')!r}")
++    if view["blockers"]:
++        lines.append("blocked stages:")
++        for blocker in view["blockers"]:
++            fields = ", ".join(
++                f"{item['field']} ({item['status']})" for item in blocker["blocked_by"])
++            lines.append(f"  {blocker['stage']}: {fields}")
++    lines.append("allowed next: " + ", ".join(view["allowed_next"]))

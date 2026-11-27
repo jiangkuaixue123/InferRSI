@@ -1,0 +1,103 @@
+       "required_before": ["candidate_search"]
+     },
+     {
+@@ -68,7 +68,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 1,
+       "type": "text",
+-      "question": "Which baseline revision is pinned for this round?",
++      "question": "Which exact baseline revision should every comparison use?",
+       "required_before": ["candidate_search"]
+     },
+     {
+@@ -77,7 +77,7 @@
+       "maps_to": "summary-only",
+       "batch": 1,
+       "type": "choice",
+-      "question": "Is the final performance target an absolute metric bound or a percentage improvement over the pinned baseline?",
++      "question": "Should the independent final meet a fixed performance bound or a minimum gain over the pinned baseline?",
+       "options": [{"value": "absolute"}, {"value": "relative_improvement_pct"}],
+       "required_before": ["candidate_search"]
+     },
+@@ -87,7 +87,7 @@
+       "maps_to": "summary-only",
+       "batch": 1,
+       "type": "number",
+-      "question": "What numeric target must the final result reach, in the metric unit for an absolute bound or percent for a relative gain?",
++      "question": "What value must the independent final reach, expressed in the metric unit for a fixed bound or in percent for a gain?",
+       "required_before": ["candidate_search"]
+     },
+     {
+@@ -96,7 +96,7 @@
+       "maps_to": "summary-only",
+       "batch": 1,
+       "type": "text",
+-      "question": "Which fixed accuracy benchmark, version or split, reference and input set decide quality?",
++      "question": "Which quality benchmark version or split and reference input set should each run use?",
+       "required_before": ["candidate_search"]
+     },
+     {
+@@ -105,7 +105,7 @@
+       "maps_to": "summary-only",
+       "batch": 1,
+       "type": "text",
+-      "question": "Which accuracy metric or baseline-relative quality difference is scored?",
++      "question": "Which numerical quality result should the scorer report?",
+       "required_before": ["candidate_search"]
+     },
+     {
+@@ -114,7 +114,7 @@
+       "maps_to": "summary-only",
+       "batch": 1,
+       "type": "choice",
+-      "question": "Which comparison must the accuracy result satisfy?",
++      "question": "Which relation between the scored quality result and its limit counts as passing?",
+       "options": [{"value": "at_least"}, {"value": "at_most"}, {"value": "equal"}],
+       "required_before": ["candidate_search"]
+     },
+@@ -124,7 +124,7 @@
+       "maps_to": "summary-only",
+       "batch": 1,
+       "type": "number",
+-      "question": "What numeric accuracy threshold or maximum regression is acceptable?",
++      "question": "What number defines the quality limit or, for baseline-relative service reuse, the permitted regression?",
+       "required_before": ["candidate_search"]
+     },
+     {
+@@ -133,7 +133,7 @@
+       "maps_to": "summary-only",
+       "batch": 1,
+       "type": "text",
+-      "question": "In what units is the accuracy threshold expressed?",
++      "question": "What concrete unit or scale applies to the quality result and its limit?",
+       "required_before": ["candidate_search"]
+     },
+     {
+@@ -142,7 +142,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 1,
+       "type": "text",
+-      "question": "Which command checks output quality on a candidate?",
++      "question": "Which exact command scores output quality against the agreed benchmark?",
+       "required_before": ["candidate_search"]
+     },
+     {
+@@ -151,10 +151,10 @@
+       "maps_to": "summary-only",
+       "batch": 1,
+       "type": "choice",
+-      "question": "What happens when a candidate fails the quality check?",
++      "question": "How should the round handle a candidate whose output fails the quality check?",
+       "options": [
+         {"value": "revert_candidate", "hint": "discard the candidate and keep the incumbent"},
+-        {"value": "keep_with_flag", "hint": "retain the candidate but flag the quality gap"}
++        {"value": "keep_with_flag", "hint": "retain the finding for planning only; measured campaigns require reverting a failed candidate"}
+       ],
+       "required_before": ["candidate_search"]
+     },
+@@ -164,7 +164,7 @@
+       "maps_to": "summary-only",
+       "batch": 1,
+       "type": "text",
+-      "question": "Where is the timing boundary, and does it include queueing or transfer?",
++      "question": "Which events start and stop the timer, and are queueing and data transfer included?",

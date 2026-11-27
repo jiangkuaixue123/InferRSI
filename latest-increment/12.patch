@@ -1,0 +1,87 @@
++numeric limit, unit, evaluation command and candidate rejection policy.
++
++Prepare the campaign using the intended launch options with
++`inferrsi campaign start --prepare-intake --intake <record.json> ...`. This
++stages inputs for comparison with the intake without starting measurements.
++Resolve any mismatch and include the effective `task_brief.campaign_launch`
++in the read-back. For service reuse, the prepared configuration supplies the
++quality inequality and identifies the retained baseline if the limit is relative.
++
++When the prepared brief reports `brief_review` as `awaiting_confirmation`, show
++the full brief in the user's language. Include the metric and quality conditions,
++pinned setup, commands, scope, comparison protocol and time budget. Ask for a
++separate approve-or-revise decision and wait for a new explicit answer. Submit it
++against the issued `q:task_brief:...` ID. Re-evaluate and show a new card if the
++user revises the brief or the effective launch changes.
++
++Use read-only preparation while approval is pending. Once the executable brief is
++approved, run `inferrsi campaign start ... --intake <record.json>` with the same
++options. The campaign checks the approval and retains its intake receipt for
++replay. Device and service actions continue to require their own authorization.
+ 
+ ## Run the procedure
+ 
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json
+index 8a419ac3..ba21bf7e 100644
+--- a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json
+@@ -1,7 +1,7 @@
+ {
+   "schema_version": 1,
+   "task": "task-performance",
+-  "description": "Confirmation fields for a performance-optimization round. Questions are asked only for fields that block the next stage; acceptance values stated outside an acceptance issue or frozen task file stay proposals.",
++  "description": "Collect the performance and quality decisions, the reproducible setup, and the comparison protocol and budget. An acceptance issue or frozen task file supplies confirmed acceptance values. The prepared campaign needs separate approval of its complete task brief.",
+   "fields": [
+     {
+       "path": "optimization.objective",
+@@ -9,7 +9,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 1,
+       "type": "text",
+-      "question": "Which outcome decides this round?",
++      "question": "What outcome should this round improve under the agreed workload?",
+       "required_before": ["baseline_measurement", "candidate_search"]
+     },
+     {
+@@ -17,7 +17,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 1,
+       "type": "text",
+-      "question": "Which metric decides this round?",
++      "question": "Which measured metric decides whether that outcome improved?",
+       "options": [
+         {"value": "p95_ttft", "hint": "client-observed p95 time to first token"},
+         {"value": "throughput", "hint": "requests completed per second under the fixed load"},
+@@ -31,7 +31,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 1,
+       "type": "text",
+-      "question": "Which unit does the metric use?",
++      "question": "What unit does the benchmark report for that performance metric?",
+       "required_before": ["candidate_search"]
+     },
+     {
+@@ -39,7 +39,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 1,
+       "type": "choice",
+-      "question": "Should the metric go down or up?",
++      "question": "Does success require a lower value or a higher value for that metric?",
+       "options": [
+         {"value": "minimize", "hint": "lower is better"},
+         {"value": "maximize", "hint": "higher is better"}
+@@ -51,7 +51,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 1,
+       "type": "number",
+-      "question": "What minimum improvement is required to keep a candidate?",
++      "question": "What minimum percentage improvement lets a trial candidate replace the incumbent?",
+       "depends_on": ["acceptance.metric_key"],
+       "required_before": ["candidate_search"]
+     },
+@@ -60,7 +60,7 @@
+       "maps_to": "task-input/v1",
+       "batch": 1,
+       "type": "text",
+-      "question": "Which acceptance issue or frozen plan states the gate?",
++      "question": "Which acceptance issue or frozen task file should supply the confirmed gate values?",

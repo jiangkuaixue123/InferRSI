@@ -1,0 +1,91 @@
+-    assert cli.main(args) == 2
+-    assert json.loads(capsys.readouterr().out)["status"] == "blocked"
+-    assert not project[3].exists()
+-    assert cli.main(["task", "intake", "evaluate", "--record", str(path), "--json"]) == 0
+-    view = json.loads(capsys.readouterr().out)
+-    assert view["fields"][key]["status"] == "unknown" and not view["complete"]
+-
+-    token = card_id(task_intake.read_record(path), key)
+-    assert cli.main(["task", "intake", "answer", "--record", str(path), "--json",
+-                     "--question", token, "--value", "%"]) == 0
+-    capsys.readouterr()
+-    assert cli.main([*args, "--prepare-intake"]) == 0
+-    brief = json.loads(capsys.readouterr().out)["task_brief"]
+-    assert brief["conditions"][key] == "%"
+-    assert cli.main(["task", "intake", "answer", "--record", str(path), "--json",
+-                     "--question", brief["id"], "--value", "approve"]) == 0
+-    capsys.readouterr()
+-    assert cli.main(args) == 0
+-    capsys.readouterr()
+-    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
+-    capsys.readouterr()
+-    _, result = submit(project, capsys, 20)
+-    assert result["latest_observation"]["assessment"]["verdict"] == "PASS"
+-
+-
+ def test_reissued_field_rejects_delayed_reply_and_keeps_unaffected_sibling(tmp_path, capsys):
+     path = tmp_path / "intake.json"
+     base = ["task", "intake"]
+diff --git a/tests/fixtures/campaign_intake.py b/tests/fixtures/campaign_intake.py
+index 1f9da1bf..9d7de38b 100644
+--- a/tests/fixtures/campaign_intake.py
++++ b/tests/fixtures/campaign_intake.py
+@@ -9,9 +9,8 @@ from pathlib import Path
+ from inferrsi.apps.cli import intake_contract as intake
+ from inferrsi.apps.cli import main, task_intake
+ from inferrsi.apps.cli.arguments import parser
+-from inferrsi.harness import executor
+-from inferrsi.harness.executor import candidates
+-from inferrsi.harness.records import service_io
++from inferrsi.harness.executor import service_revision, validate_service_settings
++from inferrsi.harness.executor.candidates import identity
+ 
+ 
+ def approved_start(arguments, *, overrides=None):
+@@ -30,15 +29,15 @@ def approved_start(arguments, *, overrides=None):
+         }
+     )
+     if args.evaluation_mode == "service_reuse":
+-        cfg = service_io.read(args.evaluation_config)
+-        executor.validate_service_settings(cfg)
++        cfg = json.loads(args.evaluation_config.read_text(encoding="utf-8"))
++        validate_service_settings(cfg)
+         obj = next(o for o in cfg["objectives"] if o["id"] == cfg["ranking"][0])
+         q = cfg["quality"]
+         cmp = "at_least" if q["direction"] == "maximize" else "at_most"
+         relative = q["mode"] == "baseline_comparison"
+         values.update(
+             {
+-                "acceptance.baseline_revision": executor.service_revision(args.repo, args.include),
++                "acceptance.baseline_revision": service_revision(args.repo, args.include),
+                 "acceptance.metric_key": obj["key"],
+                 "acceptance.metric_unit": obj["unit"],
+                 "acceptance.direction": obj["direction"],
+@@ -64,7 +63,7 @@ def approved_start(arguments, *, overrides=None):
+     else:
+         values.update(
+             {
+-                "acceptance.baseline_revision": candidates.identity(args.repo, args.include),
++                "acceptance.baseline_revision": identity(args.repo, args.include),
+                 "acceptance.metric_key": args.metric_key,
+                 "acceptance.metric_unit": args.metric_unit,
+                 "acceptance.direction": args.direction,
+diff --git a/tests/harness/test_project_objectives.py b/tests/harness/test_project_objectives.py
+index d1da036f..8f2070ef 100644
+--- a/tests/harness/test_project_objectives.py
++++ b/tests/harness/test_project_objectives.py
+@@ -82,70 +82,74 @@ def test_combined_gain_and_dual_limits_include_exact_boundary():
+     assert not evaluator.prefer_service_measurements(config, {"a": 101, "b": 10}, base["values"])
+ 
+ 
+-@pytest.mark.parametrize(("kind", "limit", "passed"), [
+-    ("absolute", 110, True),
+-    ("absolute", 95, False),
+-    ("relative_improvement_pct", 1, False),
++@pytest.mark.parametrize(("mode", "limit", "verdict"), [
++    ("absolute", 100, "PASS"),
++    ("absolute", 99, "FAIL"),
++    ("relative_improvement_pct", 1, "FAIL"),
+ ])
+-def test_service_final_target_replays_without_a_comparison_parent(tmp_path, kind, limit, passed):
+-    obj = dict(objective(), scenario="workload", key="metric", aggregate="median",

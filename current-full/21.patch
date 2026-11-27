@@ -1,0 +1,121 @@
+@@ -0,0 +1,361 @@
++"""intake/v1 CLI: evaluate, answer and summarize confirmation records.
++
++The contract lives in ``inferrsi.apps.cli.intake_contract``. This module loads the
++versioned per-task spec and the record file, applies the pure contract
++functions and writes the record back. It starts nothing and measures nothing;
++``execution`` stays ``not started`` until an existing operation is authorized.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import tempfile
++import uuid
++from importlib.resources import files
++from pathlib import Path
++
++from ..storage.artifacts import file_lock
++from . import intake_contract as intake
++
++
++def _spec_root() -> Path:
++    return Path(str(files("inferrsi").joinpath("knowledge", "data", "skill_library", "tasks")))
++
++
++def spec_path(task: str) -> Path:
++    return _spec_root() / task / "intake.json"
++
++
++def load_spec(task: str) -> dict:
++    path = spec_path(task)
++    if not path.is_file():
++        raise intake.IntakeError("unknown_task", f"No intake spec is packaged for {task}")
++    try:
++        data = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, json.JSONDecodeError) as exc:
++        raise intake.IntakeError("invalid_spec", f"{task}/intake.json: {exc}") from exc
++    return intake.load_spec(data)
++
++
++def read_record(path: Path) -> dict:
++    try:
++        raw = Path(path).read_text(encoding="utf-8")
++    except OSError as exc:
++        raise intake.IntakeError(
++            "unreadable_record", f"cannot read {path}: {exc.strerror or exc}") from exc
++    try:
++        record = json.loads(raw)
++    except json.JSONDecodeError as exc:
++        raise intake.IntakeError("invalid_record", f"{path}: {exc}") from exc
++    if not isinstance(record, dict):
++        raise intake.IntakeError("invalid_record", f"{path}: record must be an object")
++    return record
++
++
++def _payload(record: dict) -> str:
++    return json.dumps(record, ensure_ascii=False, indent=2) + "\n"
++
++
++def write_record(path: Path, record: dict) -> str:
++    """Write the record atomically; return the sha256 of the written bytes."""
++    path = Path(path)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    text = _payload(record)
++    descriptor, temp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
++    try:
++        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
++            stream.write(text)
++        os.replace(temp, path)
++    except BaseException:
++        Path(temp).unlink(missing_ok=True)
++        raise
++    return hashlib.sha256(text.encode("utf-8")).hexdigest()
++
++
++def frozen_values(path: Path) -> dict:
++    """Acceptance values stated by a frozen gate task file, keyed by spec path."""
++    from . import task_input
++
++    preview = task_input.preview(path)
++    if not preview["valid"]:
++        first = preview["errors"][0]
++        raise intake.IntakeError(
++            "invalid_frozen", f"frozen gate record: {first['field']} {first['message']}")
++    acceptance = preview["task"]["acceptance"]
++    return {f"acceptance.{name}": value for name, value in acceptance.items()
++            if name != "reference" and preview["sources"][f"acceptance.{name}"] == "yaml"}
++
++
++def parse_sets(items: list[str]) -> dict:
++    values = {}
++    for item in items:
++        path, separator, value = item.partition("=")
++        if not separator or not path.strip():
++            raise intake.IntakeError("invalid_set", f"--set expects PATH=VALUE, got {item!r}")
++        values[path.strip()] = value
++    return values
++
++
++def _persist(path: Path, record: dict, view: dict) -> None:
++    for path_key, field in record["fields"].items():
++        field["status"] = view["fields"][path_key]["status"]
++    record["open_questions"] = view["questions"]
++    record["blockers"] = view["blockers"]
++    record["conflicts"] = view["conflicts"]
++    record["allowed_next"] = view["allowed_next"]
++    record["complete"] = view["complete"]
++    write_record(path, record)
++
++
++def _evaluate_gate(record: dict, spec: dict, frozen_path: Path | None,
++                   *, selecting_reference: bool) -> tuple[dict, dict | None]:
++    snapshot = record.get("selected_gate")
++    selected_path = None
++    if snapshot:
++        selected_path = Path(record.get("selected_gate_file", snapshot["reference"]))
++    if frozen_path is None:
++        frozen_path = selected_path
++    frozen = frozen_values(frozen_path) if frozen_path else None

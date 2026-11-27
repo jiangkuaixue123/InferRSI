@@ -1,0 +1,96 @@
+-                launch, expected = _execution(plan, args, staged_args.session)
+-                conflicts = _conflicts(brief["conditions"], expected, args)
+-                if conflicts:
+-                    return _blocked("launch_conflict", conflicts=conflicts)
+-                if args.prepare_intake:
+-                    return task_intake.prepare_launch(path, record, launch)
+-                if launch != brief["campaign_launch"]:
+-                    return _blocked("launch_changed",
+-                                    message="Prepare and review the changed launch.")
+-                result = _initialize(staged_args.session, destination, plan, record, gate)
+-                return {**result, "instructions": frozen["instructions"]}
++                result = run_session(
++                    staged_args,
++                    complete_project=_approval_handler(args, path, record, gate, destination),
++                )
++                if result.get("execution") == "not started":
++                    result.pop("instructions", None)
++                return result
+     except BlockingIOError:
+         return _blocked("record_busy", message="Retry when the intake update finishes.")
+ 
+ 
+-def _initialize(staged, destination, plan, record, gate):
++def _approval_handler(args, path, record, gate, destination):
++    brief = gate["task_brief"]
++    conditions = brief["conditions"]
++
++    def complete(staged, plan, *, initialize):
++        if args.evaluation_mode == "abba":
++            plan["evaluation_settings"]["quality_bound"] = {
++                key: conditions["protocol.quality_" + key]
++                for key in ("metric", "comparator", "limit", "unit")
++            }
++        launch, expected = _execution(plan, args, staged)
++        conflicts = _conflicts(conditions, expected, args)
++        if conflicts:
++            return _blocked("launch_conflict", conflicts=conflicts)
++        if args.prepare_intake:
++            return task_intake.prepare_launch(path, record, launch)
++        if launch != brief["campaign_launch"]:
++            return _blocked("launch_changed", message="Prepare and review the changed launch.")
++        return _publish(staged, destination, plan, record, gate, initialize)
++
++    return complete
++
++
++def _publish(staged, destination, plan, record, gate, initialize):
+     conditions = gate["task_brief"]["conditions"]
+     plan["performance_target"] = {
+         name: conditions["protocol." + name] for name in ("target_kind", "target_value")
+@@ -175,7 +185,7 @@ def _initialize(staged, destination, plan, record, gate):
+     try:
+         for path in staged.iterdir():
+             shutil.move(str(path), destination / path.name)
+-        result = initialize_session(destination, plan)
++        result = initialize(destination, plan)
+     except BaseException:
+         shutil.rmtree(destination)
+         raise
+diff --git a/src/inferrsi/apps/cli/intake_contract.py b/src/inferrsi/apps/cli/intake_contract.py
+index b6536d2c..9b54ca46 100644
+--- a/src/inferrsi/apps/cli/intake_contract.py
++++ b/src/inferrsi/apps/cli/intake_contract.py
+@@ -1,7 +1,15 @@
+-"""intake/v1: pure functions over task intake records; no I/O.
+-
+-A proposal kept in a record never freezes an acceptance gate, and ``source`` is
+-declared by the caller, not authenticated.
++"""intake/v1: host-independent task intake records for missing-field confirmation.
++
++A card, a numbered text fallback and an optional check-in interview all write the
++same record. The record separates what the user stated (``confirmed``), what a
++card answer proposes (``proposed``), what stays unknown (``unknown``) and what
++conflicts (``conflicting``). ``evaluate`` selects the questions that unblock the
++next stage, derives ``allowed_next`` and never authenticates acceptance
++thresholds: a proposal kept in a record does not freeze a gate.
++
++The contract performs no I/O. Mapped numeric values use the task-input validator. Callers in
++``inferrsi.apps.cli.task_intake`` load the versioned spec and record, then call these
++pure functions. ``source`` is declared by the caller and is not authenticated.
+ """
+ 
+ from __future__ import annotations
+@@ -11,10 +19,11 @@ import hashlib
+ import json
+ import math
+ 
+-from ...harness.evaluator import quality_unit_declared
++from ...harness.evaluator import validate_quality_unit
+ from . import task_input
+ 
+ SCHEMA_VERSION = 1
++QUALITY_UNIT = "protocol.quality_unit"
+ 
+ STAGES = (
+     "read_only_preparation",

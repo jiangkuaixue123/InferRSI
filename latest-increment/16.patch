@@ -1,0 +1,91 @@
+-    assert not campaign["root"].exists()
+-
+-
+ def test_live_dashboard_state_has_no_content_fingerprint(campaign):
+     import threading
+     from urllib.request import urlopen
+@@ -1995,6 +1987,19 @@ def test_service_planning_brief_marks_quality_inputs_provisional(campaign):
+     assert not campaign["root"].exists()
+ 
+ 
++@pytest.mark.parametrize("unit", [None, "", "unknown", " N/A ", "unspecified"])
++def test_service_preparation_requires_a_quality_scale(campaign, unit):
++    config = settings()
++    if unit is None:
++        config["quality"].pop("unit")
++    else:
++        config["quality"]["unit"] = unit
++    campaign["config"].write_text(json.dumps(config))
++    assert rejected(campaign["start"]) == 2
++    assert "concrete quality unit" in campaign["capsys"].readouterr().err
++    assert not campaign["root"].exists()
++
++
+ @pytest.mark.parametrize(("mode", "baseline", "limit", "score", "unit", "verdict"), [
+     ("absolute", 0.5, 1, 0.02, "fraction", "FAIL"),
+     ("absolute", 0.5, 1, 0.005, "fraction", "PASS"),
+@@ -2044,5 +2049,5 @@ def test_service_scores_in_the_approved_quality_unit(campaign, mode, baseline, l
+             evaluator.service_quality_score(frozen, receipt)
+     else:
+         normalized = evaluator.service_quality_score(frozen, receipt)
+-        passed = evaluator.service_quality_passed(frozen, normalized, reference)
+-        assert passed is (verdict == "PASS")
++        passes = evaluator.service_quality_passed(frozen, normalized, reference)
++        assert passes is (verdict == "PASS")
+diff --git a/tests/apps/test_task_intake.py b/tests/apps/test_task_intake.py
+index 06eb8fa4..9c5df4dc 100644
+--- a/tests/apps/test_task_intake.py
++++ b/tests/apps/test_task_intake.py
+@@ -655,18 +655,6 @@ def test_user_can_choose_a_different_gate_after_returning_the_brief(tmp_path, ca
+     assert updated["brief_review"] == "awaiting_confirmation"
+     assert updated["task_brief"]["id"] != view["task_brief"]["id"]
+ 
+-def test_packaged_execution_fields_use_task_input_bounds():
+-    from inferrsi.apps.cli import task_input
+-    fields = {field["path"]: field for field in spec_for()["fields"]}
+-    expected = {"environment.repetitions": ("integer", "count"),
+-                "environment.rounds": ("integer", "count"),
+-                "environment.max_minutes": ("number", "minutes")}
+-    for path, (kind, bound) in expected.items():
+-        assert fields[path]["maps_to"] == "task-input/v1"
+-        assert fields[path]["type"] == kind
+-        assert task_input.BY_PATH[path].kind == bound
+-
+-
+ @pytest.mark.parametrize(("key", "invalid", "valid"), [
+     ("environment.repetitions", 0, 1),
+     ("environment.rounds", -1, 1),
+@@ -723,29 +711,63 @@ def test_loaded_approved_record_reopens_unusable_execution_values(project, tmp_p
+     assert not view["complete"]
+ 
+ 
+-@pytest.mark.parametrize(("key", "invalid"), [
+-    ("environment.repetitions", 0),
+-    ("environment.rounds", -1),
+-    ("environment.max_minutes", -5),
++@pytest.mark.parametrize(("field", "kind", "bad", "replacement"), [
++    ("environment.repetitions", "integer", 0, "1"),
++    ("environment.rounds", "integer", -1, "2"),
++    ("environment.max_minutes", "number", -5, "0.5"),
+ ])
+-def test_saved_record_reopens_one_unusable_value_and_rejects_it_again(tmp_path, capsys, key,
+-                                                                    invalid):
+-    path = tmp_path / "intake.json"
++def test_packaged_launch_limit_reopens_on_read(tmp_path, capsys, field, kind, bad, replacement):
++    spec = task_intake.load_spec("task-performance")
++    definition = next(item for item in spec["fields"] if item["path"] == field)
++    assert (definition["maps_to"], definition["type"]) == ("task-input/v1", kind)
++    path = tmp_path / "previously-approved.json"
++    args = ["--record", str(path), "--json"]
+     record = approved_record()
+-    record["fields"][key]["value"] = invalid
+-    record["complete"] = True
+-    path.write_text(json.dumps(record))
+-    assert cli.main(["task", "intake", "evaluate", "--record", str(path), "--json"]) == 0
+-    reopened = json.loads(capsys.readouterr().out)
+-    assert reopened["fields"][key]["status"] == "unknown"
+-    assert not reopened["complete"]
+-    token = card_id(task_intake.read_record(path), key)
+-    unchanged = path.read_bytes()
+-    assert cli.main(["task", "intake", "answer", "--record", str(path), "--json",
+-                     "--question", token, "--value", str(invalid)]) == 2

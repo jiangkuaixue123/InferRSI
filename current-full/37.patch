@@ -1,0 +1,80 @@
++    failed = submit(campaign, version="wrong-quality", a=90, quality=0.02, score_unit="fraction")
++    assert failed["latest_observation"]["assessment"]["verdict"] == "FAIL"
++    assert failed["best"]["kind"] == "baseline"
++    result = submit(campaign, version="accepted", a=95, b=102, quality=0.005,
++                    score_unit="fraction")
+     attempt = result["latest_observation"]
+     assert attempt["assessment"]["verdict"] == "PASS"
+     log = events(campaign, attempt)
+@@ -453,6 +462,28 @@ def test_baseline_selected_final_has_no_self_gain_requirement(campaign):
+     assert final["best"]["kind"] == "baseline"
+ 
+ 
++@pytest.mark.parametrize(("kind", "value"), [("absolute", 95), ("relative_improvement_pct", 1)])
++def test_service_final_rejects_selected_baseline_below_approved_target(campaign, kind, value):
++    from tests.fixtures.campaign_intake import approved_start
++
++    start_args = approved_start(
++        campaign["start"],
++        overrides={"protocol.target_kind": kind, "protocol.target_value": value},
++    )
++    assert main(start_args) == 0
++    campaign["capsys"].readouterr()
++    call(campaign, "baseline")
++    diagnose(campaign)
++    submit(campaign, version="unchanged", a=100)
++    outcome = call(campaign, "final", "--reason", "Measure the retained baseline independently")
++    assert outcome["best"]["kind"] == "baseline"
++    final = outcome["final"]
++    assert final["assessment"]["verdict"] == "FAIL"
++    assert final["assessment"]["reason"] == "final_performance_target_not_met"
++    replay = service_io.read(campaign["root"] / final["path"] / "observation.json")
++    assert replay["assessment"] == final["assessment"]
++
++
+ def test_missing_performance_evidence_blocks_without_quality_or_profile(campaign):
+     begin(campaign)
+     result = submit(campaign, version="missing", a=90, missing_metric=True, expected=2)
+@@ -604,17 +635,22 @@ def test_incomplete_baseline_prevents_candidate_search(campaign):
+ def test_baseline_comparison_quality_and_pause_resume(campaign):
+     config = settings()
+     config["quality"].pop("threshold")
+-    config["quality"].update(mode="baseline_comparison", tolerance=0)
++    config["quality"].update(mode="baseline_comparison", direction="minimize", unit="%",
++                             tolerance=0.5)
+     config["stagnation"] = {"rounds": 1, "action": "pause"}
+     campaign["config"].write_text(json.dumps(config))
++    commit(campaign["repo"], quality=0.5, score_unit="%")
+     begin(campaign)
+-    result = submit(campaign, version="worse-quality", a=90, quality=0)
++    result = submit(campaign, version="worse-quality", a=90, quality=0.02, score_unit="fraction")
+     assert result["state"] == "paused"
+     assert result["latest_observation"]["assessment"]["quality_passed"] is False
+     resumed = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     repeated = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     assert resumed["stagnation"] == repeated["stagnation"]
+     assert resumed["state"] == "active"
++    accepted = submit(campaign, version="improved", a=90, quality=0.005, score_unit="fraction")
++    assert accepted["latest_observation"]["assessment"]["verdict"] == "PASS"
++    assert accepted["latest_observation"]["execution"]["quality_score"] == 0.5
+ 
+ 
+ def test_accepted_but_unselected_candidate_keeps_its_verdict(campaign):
+@@ -906,6 +942,7 @@ def test_existing_quality_reference_is_reused_only_when_compatible(campaign, com
+         "run_id": "previous-run",
+         "dataset": "synthetic",
+         "scorer": "exact-v1" if compatible else "incompatible-scorer",
++        "unit": "points",
+         "samples": 2,
+         "quality": 1,
+     }
+@@ -934,7 +971,7 @@ def test_reference_refresh_uses_baseline_cache_without_testing_parent_quality(
+     reference = {
+         "status": "completed", "revision": revision, "conditions": config["conditions"],
+         "service_id": "previous-service", "run_id": "previous-run",
+-        "dataset": "synthetic", "scorer": "exact-v1", "samples": 2, "quality": 1,
++        "dataset": "synthetic", "scorer": "exact-v1", "unit": "points", "samples": 2, "quality": 1,
+     }
+     protocol = Path(campaign["start"][campaign["start"].index("--protocol") + 1])
+     (protocol / "reference.json").write_text(json.dumps(reference))
+@@ -1775,7 +1812,7 @@ def test_standalone_capture_leaves_search_budget_and_reserve_intact(campaign, mo

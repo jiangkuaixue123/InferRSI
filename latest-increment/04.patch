@@ -1,0 +1,110 @@
++    ``record["open_questions"]``; its dependency snapshot must still hold and
++    the field must still be open. A duplicate, stale or inapplicable delivery
++    is rejected, so a late reply to a superseded question changes nothing.
+     """
+     record = reconcile_record(record, spec)
+     open_questions = record.get("open_questions")
+@@ -756,6 +781,7 @@ def answer(record: dict, spec: dict, *, question_id: str, value: object = None,
+ 
+ 
+ def summary(record: dict, spec: dict, *, frozen: dict | None = None) -> dict:
++    """A readable confirmation summary: sources, proposals, unknowns and next steps."""
+     view = evaluate(record, spec, frozen=frozen)
+     confirmed, proposed, unknown = {}, {}, []
+     for field in spec["fields"]:
+diff --git a/src/inferrsi/apps/cli/task_intake.py b/src/inferrsi/apps/cli/task_intake.py
+index 4d9c565b..39436337 100644
+--- a/src/inferrsi/apps/cli/task_intake.py
++++ b/src/inferrsi/apps/cli/task_intake.py
+@@ -1,4 +1,10 @@
+-"""intake/v1 CLI: load spec and record, apply ``intake_contract``, write the record back."""
++"""intake/v1 CLI: evaluate, answer and summarize confirmation records.
++
++The contract lives in ``inferrsi.apps.cli.intake_contract``. This module loads the
++versioned per-task spec and the record file, applies the pure contract
++functions and writes the record back. It starts nothing and measures nothing;
++``execution`` stays ``not started`` until an existing operation is authorized.
++"""
+ 
+ from __future__ import annotations
+ 
+@@ -203,8 +209,10 @@ def summary_command(args) -> dict:
+ 
+ def campaign_gate(path: Path, *, expected_task: str = "task-performance",
+                   frozen: dict | None = None) -> tuple[dict, dict]:
+-    """Return the gate and the record it read; retain that record, so the bytes kept
+-    next to the campaign are the ones this gate evaluated.
++    """Evaluate a record for ``campaign start``; return the gate and the record it read.
++
++    Never starts or measures anything. The caller retains the returned record, so the
++    bytes kept next to the campaign are the ones this gate evaluated.
+     """
+     record = read_record(Path(path))
+     if record.get("task") != expected_task:
+diff --git a/src/inferrsi/harness/evaluator/__init__.py b/src/inferrsi/harness/evaluator/__init__.py
+index a1bfba2f..23309ee3 100644
+--- a/src/inferrsi/harness/evaluator/__init__.py
++++ b/src/inferrsi/harness/evaluator/__init__.py
+@@ -16,11 +16,15 @@ from ._measurement import (
+     relative_mad,
+     validate_mechanism,
+ )
+-from ._project import assess_project, inspect_project_step, project_steps, quality_unit_declared
++from ._project import (
++    assess_project,
++    inspect_project_step,
++    project_steps,
++    validate_quality_unit,
++)
+ from ._service import (
+     ServiceStageDecision,
+     aggregate_service_measurements,
+-    assess_service_attempt_performance,
+     assess_service_performance,
+     check_service_quality_reference,
+     prefer_service_measurements,
+@@ -33,6 +37,7 @@ from ._service import (
+     service_quality_passed,
+     service_quality_score,
+     service_ready,
++    service_trial_gate,
+ )
+ from ._service_evidence import (
+     service_choice,
+@@ -50,7 +55,6 @@ __all__ = [
+     "aggregate_service_measurements",
+     "assess_ordinary",
+     "assess_project",
+-    "assess_service_attempt_performance",
+     "assess_service_performance",
+     "check_service_quality_reference",
+     "explain",
+@@ -64,7 +68,6 @@ __all__ = [
+     "prefer_service_measurements",
+     "profile_evidence",
+     "project_steps",
+-    "quality_unit_declared",
+     "relative_mad",
+     "service_assessment",
+     "service_choice",
+@@ -76,19 +79,22 @@ __all__ = [
+     "service_quality_passed",
+     "service_quality_score",
+     "service_ready",
++    "service_trial_gate",
+     "service_reference_snapshot",
+     "service_references_reason",
+     "service_settlement_reason",
+     "validate_mechanism",
++    "validate_quality_unit",
+ ]
+ 
+ 
+ def assess_ordinary(root, directory, plan, execution, mechanism=None, *, assess_packaged):
+     """Read project evidence or delegate to the packaged task's supplied assessor."""
+     if plan["task_source"] == "project":
+-        target = plan.get("performance_target") if directory.parent == root / "final" else None
++        is_final = directory.parent == root / "final"
++        final_target = plan.get("performance_target") if is_final else None
+         return assess_project(
+             directory, plan["evaluation_settings"], execution,

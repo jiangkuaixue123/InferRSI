@@ -1,0 +1,78 @@
+ from inferrsi.harness.manager import read_session_records
+ from inferrsi.harness.records.artifact_primitives import digest
++from tests.fixtures.campaign_intake import approved_start
+ from tests.fixtures.diagnosis import diagnosis_args
+ 
+ # Device-wide factor applied to every timed value of one measurement call, cycling per
+@@ -46,7 +47,8 @@ def project(tmp_path):
+     (protocol / "quality.py").write_text(
+         "import json, runpy, sys\nfrom pathlib import Path\n"
+         "compute = runpy.run_path(str(Path(sys.argv[1])/'engine.py'))['compute']\n"
+-        "Path(sys.argv[2]).write_text(json.dumps({'correct':compute(16)==32}))\n",
++        "result = {'correct':compute(16)==32,'dataset':'fixture-exact-v1'}\n"
++        "Path(sys.argv[2]).write_text(json.dumps(result))\n",
+         encoding="utf-8",
+     )
+     instructions = tmp_path / "task.md"
+@@ -56,18 +58,19 @@ def project(tmp_path):
+ 
+ def start(project, capsys, *extra, repetitions=8):
+     repo, protocol, instructions, root = project
+-    code = main([
++    code = main(approved_start([
+         "campaign", "start", "--directory", str(root), "--repo", str(repo),
+         "--include", "engine.py", "--include", "config.json", "--protocol", str(protocol),
+         "--instructions", str(instructions), "--measure-command",
+         '"{python}" "{protocol}/measure.py" "{candidate}" "{result}"',
+         "--quality-command", '"{python}" "{protocol}/quality.py" "{candidate}" "{result}"',
+         "--metric-key", "metric", "--metric-unit", "ms", "--direction", "minimize",
+-        "--quality-key", "correct", "--scope", "synthetic-software-control",
++        "--quality-benchmark", "fixture-exact-v1", "--quality-key", "correct",
++        "--scope", "synthetic-software-control",
+         "--repetitions", str(repetitions), "--warmups", "1", "--min-improvement-pct", "1",
+         "--rounds", "4", "--round-mode", "up_to", "--max-minutes", "5",
+         "--evaluation-timeout-seconds", "20", *extra,
+-    ])
++    ]))
+     if code == 0:  # Rounds require a retained bottleneck diagnosis (#519).
+         assert main(diagnosis_args(root, "campaign")) == 0
+     capsys.readouterr()
+diff --git a/tests/apps/test_project_optimization.py b/tests/apps/test_project_optimization.py
+index a181c91d..1b805687 100644
+--- a/tests/apps/test_project_optimization.py
++++ b/tests/apps/test_project_optimization.py
+@@ -11,6 +11,7 @@ import pytest
+ from inferrsi.apps.cli import main
+ from inferrsi.apps.views.dashboard import dashboard_snapshot, render_dashboard
+ from inferrsi.harness.manager import read_session_records
++from tests.fixtures.campaign_intake import approved_start, preparation_arguments
+ from tests.fixtures.diagnosis import diagnosis_args
+ from tests.fixtures.session_process import kill_controller, target_python
+ 
+@@ -32,7 +33,8 @@ def project(tmp_path):
+     (protocol / "quality.py").write_text(
+         "import json, runpy, sys\nfrom pathlib import Path\n"
+         "compute = runpy.run_path(str(Path(sys.argv[1])/'engine.py'))['compute']\n"
+-        "Path(sys.argv[2]).write_text(json.dumps({'correct':compute(16)==32}))\n",
++        "result = {'correct':compute(16)==32,'dataset':'fixture-exact-v1'}\n"
++        "Path(sys.argv[2]).write_text(json.dumps(result))\n",
+         encoding="utf-8",
+     )
+     instructions = tmp_path / "task.md"
+@@ -50,7 +52,8 @@ def start_arguments(project, *, direction="maximize", mode="up_to", extra=()):
+         '"{python}" "{protocol}/measure.py" "{candidate}" "{result}"',
+         "--quality-command", '"{python}" "{protocol}/quality.py" "{candidate}" "{result}"',
+         "--metric-key", "metric", "--metric-unit", "synthetic-units", "--direction", direction,
+-        "--quality-key", "correct", "--scope", "synthetic-software-control",
++        "--quality-benchmark", "fixture-exact-v1", "--quality-key", "correct",
++        "--scope", "synthetic-software-control",
+         "--repetitions", "2", "--warmups", "1", "--min-improvement-pct", "1",
+         "--rounds", "3", "--round-mode", mode, "--max-minutes", "5",
+         "--evaluation-timeout-seconds", "20", *extra,
+@@ -58,7 +61,8 @@ def start_arguments(project, *, direction="maximize", mode="up_to", extra=()):
+ 
+ 
+ def start(project, capsys, *, direction="maximize", mode="up_to", extra=()):
+-    assert main(start_arguments(project, direction=direction, mode=mode, extra=extra)) == 0
++    args = start_arguments(project, direction=direction, mode=mode, extra=extra)
++    assert main(approved_start(args)) == 0

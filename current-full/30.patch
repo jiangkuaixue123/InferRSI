@@ -1,0 +1,99 @@
+    machine readers is available through
+    `inferrsi skills resource inference-task-router references/routes/version-align.json`.
+-2. Capture the actual run as the primary skill directs. Use observed triggers
++2. For `task-day-0` or `task-performance`, open the selected skill's intake
++   with `inferrsi task intake evaluate --task <selected-skill> --record <record.json>`.
++   Use the returned questions to collect missing choices and the blockers to
++   identify which work can proceed. Record a user's reply against the question
++   ID issued for that choice. The performance procedure requires a separate
++   decision on the completed brief before measured work.
++3. Capture the actual run as the primary skill directs. Use observed triggers
+    to choose supporting skills. Search for the named component or symptom with
+    `inferrsi find`. Resolve candidate skill IDs via `skills show`, read their
+    applicability, and retain only the source-backed matches. An exact owner
+    or resource can also be opened directly. If only cross-platform methodology
+    matches, return it as such, and list the missing target-specific evidence.
+-3. Record primary and secondary tasks, target conditions, fixed source references,
++4. Record primary and secondary tasks, target conditions, fixed source references,
+    gaps and acceptance evidence. A candidate skill is a starting point for
+    inspection. Execution and promotion require the normal workbench contracts.
+ 
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json
+new file mode 100644
+index 00000000..7d050492
+--- /dev/null
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/intake.json
+@@ -0,0 +1,63 @@
++{
++  "schema_version": 1,
++  "task": "task-day-0",
++  "description": "Collect a reproducible day-zero target, then the reference evidence needed to check it. These fields stay in the intake record and summary because task-input/v1 does not represent them.",
++  "fields": [
++    {
++      "path": "day0.checkpoint",
++      "maps_to": "day0-spec",
++      "batch": 1,
++      "type": "text",
++      "question": "Which checkpoint and revision must the target engine load, and where are its weights?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.tokenizer_or_processor",
++      "maps_to": "day0-spec",
++      "batch": 1,
++      "type": "text",
++      "question": "Which tokenizer or modality processor, including its revision, goes with those weights?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.target_engine_and_device",
++      "maps_to": "day0-spec",
++      "batch": 1,
++      "type": "text",
++      "question": "Which engine revision, backend and device must run the first supported revision?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.first_scope",
++      "maps_to": "day0-spec",
++      "batch": 1,
++      "type": "text",
++      "question": "Which modalities and features must work in the first delivery?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.reference_implementation",
++      "maps_to": "day0-spec",
++      "batch": 2,
++      "type": "text",
++      "question": "Which implementation and revision supply the expected outputs for comparison?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.replayable_inputs",
++      "maps_to": "day0-spec",
++      "batch": 2,
++      "type": "text",
++      "question": "Which fixed requests or fixtures let the reference and target replay the same inputs?",
++      "required_before": ["device_execution"]
++    },
++    {
++      "path": "day0.consistency_criteria",
++      "maps_to": "day0-spec",
++      "batch": 2,
++      "type": "text",
++      "question": "What outputs or tolerances must match at each stage before the target counts as supported?",
++      "required_before": ["device_execution"]
++    }
++  ]
++}
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
+index 76b25ae7..00f4e173 100644
+--- a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/SKILL.md
+@@ -32,14 +32,58 @@ metadata:
+ 
+ # Optimize a measured inference bottleneck
+ 
+-## Capture the actual run
+-

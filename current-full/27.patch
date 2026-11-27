@@ -1,0 +1,85 @@
+ def service_assessment(verdict, reason, **fields):
+@@ -176,7 +224,8 @@ def service_measurement_decision(role, reference_kind, gate, quality):
+         if role != "candidate":
+             skipped += ((("profile",), "not_required"),)
+         return ServiceStageDecision(
+-            service_assessment("FAIL", "performance_gate_not_met", performance=gate),
++            service_assessment("FAIL", gate.get("reason", "performance_gate_not_met"),
++                               performance=gate),
+             skipped,
+         )
+     if reference_kind == "parent":
+diff --git a/src/inferrsi/harness/evaluator/_service_evidence.py b/src/inferrsi/harness/evaluator/_service_evidence.py
+index 830c6320..82e7ec50 100644
+--- a/src/inferrsi/harness/evaluator/_service_evidence.py
++++ b/src/inferrsi/harness/evaluator/_service_evidence.py
+@@ -111,16 +111,7 @@ def evaluation_reason(root, plan, record):
+         measured = _service.aggregate_service_measurements(settings, docs, role)
+         if measured != execution["measurements"]:
+             return "unverifiable_evaluation_evidence"
+-        gate = (
+-            _service.assess_service_performance(
+-                settings,
+-                measured,
+-                record["parent"]["measurements"],
+-                record["initial"]["measurements"],
+-            )
+-            if record["parent"]
+-            else {"passed": True, "metrics": {}}
+-        )
++        gate = _service.service_trial_gate(plan, record, measured)
+         if gate != assessed["performance"]:
+             return "unverifiable_evaluation_evidence"
+         # Refreshed comparison parents supply performance only; the initial run owns quality.
+diff --git a/src/inferrsi/harness/executor/_project.py b/src/inferrsi/harness/executor/_project.py
+index b15f773b..0d8672de 100644
+--- a/src/inferrsi/harness/executor/_project.py
++++ b/src/inferrsi/harness/executor/_project.py
+@@ -22,6 +22,10 @@ def validate_project(settings: dict) -> None:
+     for key in ("metric_key", "metric_unit", "quality_key", "scope"):
+         if not isinstance(settings[key], str) or not settings[key].strip():
+             raise ValueError(f"An explicit {key} is required")
++    if "quality_benchmark" in settings and not (
++        isinstance(settings["quality_benchmark"], str) and settings["quality_benchmark"].strip()
++    ):
++        raise ValueError("An explicit quality benchmark identity is required")
+     if settings["direction"] not in ("minimize", "maximize"):
+         raise ValueError("Metric direction must be explicit")
+     if type(settings["repetitions"]) is not int or settings["repetitions"] < 1:
+diff --git a/src/inferrsi/harness/executor/serving/_attempt.py b/src/inferrsi/harness/executor/serving/_attempt.py
+index c404a21d..7835c4ac 100644
+--- a/src/inferrsi/harness/executor/serving/_attempt.py
++++ b/src/inferrsi/harness/executor/serving/_attempt.py
+@@ -206,13 +206,7 @@ def execute_service_attempt(root, directory, plan, pending, deadline):
+             record["failed_stage"], error = first_failure
+             raise error
+         measured = evaluator.aggregate_service_measurements(settings, docs, role)
+-        gate = (
+-            evaluator.assess_service_performance(
+-                settings, measured, parent["measurements"], initial["measurements"]
+-            )
+-            if parent is not None
+-            else {"passed": True, "metrics": {}}
+-        )
++        gate = evaluator.service_trial_gate(plan, pending, measured)
+         decision = evaluator.service_measurement_decision(
+             role, pending.get("reference_kind"), gate, settings["quality"],
+         )
+diff --git a/src/inferrsi/harness/executor/serving/_plan.py b/src/inferrsi/harness/executor/serving/_plan.py
+index d7c979f1..6ec41e98 100644
+--- a/src/inferrsi/harness/executor/serving/_plan.py
++++ b/src/inferrsi/harness/executor/serving/_plan.py
+@@ -24,7 +24,7 @@ def validate_service_conditions(conditions):
+     service_io.no_fingerprints(conditions)
+ 
+ 
+-def validate_service_settings(settings):
++def validate_service_settings(settings, *, new_campaign=False):
+     service_io.no_fingerprints(settings)
+     for name in ("conditions", "commands", "sampling", "quality", "stagnation"):
+         if not isinstance(settings.get(name), dict):
+@@ -139,6 +139,10 @@ def validate_service_settings(settings):
+         )
+     ):
+         raise ValueError("Declare quality mode, direction, dataset, scorer and key")
++    if new_campaign or "unit" in quality:

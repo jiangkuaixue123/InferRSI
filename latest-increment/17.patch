@@ -1,0 +1,88 @@
+-    error = json.loads(capsys.readouterr().out)
+-    assert error["error"] == "invalid_value" and key in error["message"]
+-    assert path.read_bytes() == unchanged
++    record["fields"][field]["value"] = bad
++    task_intake.write_record(path, record)
++
++    assert cli.main(["task", "intake", "evaluate", *args]) == 0
++    response = json.loads(capsys.readouterr().out)
++    assert response["task_brief"] is None
++    assert response["allowed_next"] == ["read_only_preparation"]
++    question = next(q for q in response["questions"] if q["field"] == field)
++    assert "brief_decision" not in task_intake.read_record(path)
++    assert cli.main(["task", "intake", "answer", *args, "--question", question["id"],
++                     "--value", replacement]) == 0
++    corrected = json.loads(capsys.readouterr().out)
++    assert corrected["brief_review"] == "awaiting_confirmation"
++    assert corrected["fields"][field]["value"] == float(replacement)
++
++
++@pytest.mark.parametrize("placeholder", ["", "  ", "UnKnown", "UNSPECIFIED", " n/a "])
++def test_approved_intake_rejects_placeholder_quality_unit(project, capsys, placeholder):  # noqa: F811
++    command = approved_start(start_arguments(project))
++    path = Path(command[-1])
++    field = "protocol.quality_unit"
++    saved = task_intake.read_record(path)
++    saved["fields"][field]["value"] = placeholder
++    task_intake.write_record(path, saved)
++
++    assert cli.main(command) == 2
++    blocked = json.loads(capsys.readouterr().out)
++    assert blocked["task_brief"] is None
++    assert not project[3].exists()
++
++    base = ["task", "intake"]
++    record_args = ["--record", str(path), "--json"]
++    assert cli.main([*base, "evaluate", *record_args]) == 0
++    response = json.loads(capsys.readouterr().out)
++    question = next(item["id"] for item in response["questions"] if item["field"] == field)
++    answer = [*base, "answer", *record_args, "--question", question, "--value"]
++    previous = path.read_bytes()
++    assert cli.main([*answer, placeholder]) == 2
++    assert json.loads(capsys.readouterr().out)["error"] == "invalid_value"
++    assert previous == path.read_bytes()
++
++    assert cli.main([*answer, "%"]) == 0
++    corrected = json.loads(capsys.readouterr().out)
++    assert corrected["brief_review"] == "awaiting_confirmation"
++    assert corrected["fields"][field]["value"] == "%"
+ 
+ 
+ @pytest.mark.parametrize(("flag", "value", "reason"), [
+@@ -903,64 +925,6 @@ def test_abba_scores_in_the_approved_quality_unit(project, capsys, score, unit,
+             assert assessment["reason"] == "quality_unit_mismatch"
+ 
+ 
+-def test_placeholder_quality_unit_is_never_approved_or_started(project, tmp_path, capsys):  # noqa: F811
+-    from tests.apps.test_project_optimization import submit
+-    from tests.fixtures.diagnosis import diagnosis_args
+-
+-    key = "protocol.quality_unit"
+-    open_path = tmp_path / "open.json"
+-    open_path.write_text(json.dumps(build(set(ALL_VALUES) - {key})))
+-    record = ["--record", str(open_path), "--json"]
+-    assert cli.main(["task", "intake", "evaluate", *record]) == 0
+-    token = next(q["id"] for q in json.loads(capsys.readouterr().out)["questions"]
+-                 if q["field"] == key)
+-    unchanged = open_path.read_bytes()
+-    for cmd in (["evaluate", "--set", f"{key}=unknown"],
+-                ["answer", "--question", token, "--value", "unknown"],
+-                ["answer", "--question", token, "--value", "N/A"]):
+-        assert cli.main(["task", "intake", *cmd, *record]) == 2
+-        error = json.loads(capsys.readouterr().out)
+-        assert error["error"] == "invalid_value" and key in error["message"]
+-        assert open_path.read_bytes() == unchanged
+-
+-    (project[1] / "quality.py").write_text(
+-        "import json, sys\nfrom pathlib import Path\n"
+-        "candidate = Path(sys.argv[1]).name == 'candidate'\n"
+-        "result = {'correct': True, 'dataset': 'fixture-exact-v1', 'errors': 0.5, 'unit': '%'}\n"
+-        "if candidate: result.update(errors=0.005, unit='fraction')\n"
+-        "Path(sys.argv[2]).write_text(json.dumps(result))\n")
+-    args = approved_start(start_arguments(project), overrides={
+-        "protocol.quality_metric": "errors", "protocol.quality_limit": 1,
+-        "protocol.quality_comparator": "at_most", key: "%"})
+-    path = Path(args[-1])
+-    imported = json.loads(path.read_text())
+-    imported["fields"][key]["value"] = "unknown"
+-    path.write_text(json.dumps(imported))

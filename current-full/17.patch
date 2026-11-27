@@ -1,0 +1,84 @@
++        "fallback": "unknown",
++        "depends_on": snapshot,
++    }
++    # Keep a batch sibling's token across unrelated edits. A reissued card gets
++    # the new revision even if a previous set of choices eventually comes back.
++    issued = record["revision"]
++    for prior in record.get("open_questions", []):
++        if isinstance(prior, dict) and all(prior.get(key) == value for key, value in card.items()):
++            issued = prior.get("issued_revision", issued)
++            break
++    identity = _canonical([record["record_id"], issued, card])
++    digest = hashlib.sha256(identity.encode()).hexdigest()
++    return {**card, "id": f"{_QUESTION}{field['path']}:{digest}", "issued_revision": issued}
++
++
++def _frozen_conflicts(record: dict, spec: dict, frozen: dict | None) -> list[dict]:
++    if not frozen:
++        return []
++    conflicts = []
++    for field in spec["fields"]:
++        path = field["path"]
++        if not path.startswith(ACCEPTANCE) or path not in frozen:
++            continue
++        entry = _entry(record, path)
++        if entry.get("value") is None:
++            continue
++        if _canonical(entry["value"]) != _canonical(frozen[path]):
++            conflicts.append({
++                "field": path,
++                "message": "record value disagrees with the frozen gate record",
++                "record_value": entry["value"],
++                "frozen_value": frozen[path],
++            })
++    return conflicts
++
++
++def _service_quality_line(quality: dict, unit: str) -> str:
++    metric = quality["key"]
++    higher = quality["direction"] == "maximize"
++    direction = "higher is better" if higher else "lower is better"
++    operator = ">=" if higher else "<="
++    if quality["mode"] == "absolute":
++        limit = str(quality["threshold"]).removesuffix(".0")
++        return f"{metric} {operator} {limit} {unit} (absolute threshold; {direction})"
++    tolerance = str(quality["tolerance"]).removesuffix(".0")
++    sign = "-" if higher else "+"
++    if unit in ("%", "percent"):
++        unit = "percentage point" if quality["tolerance"] == 1 else "percentage points"
++    return (f"{metric} {operator} baseline {metric} {sign} {tolerance} {unit} "
++            f"(baseline comparison; {direction}; reference: retained baseline score "
++            "for the current comparison epoch)")
++
++
++def _performance_brief(record: dict, spec: dict) -> dict:
++    values = {field["path"]: _coerce(field, record["fields"][field["path"]]["value"])
++              for field in spec["fields"] if _applicable(record, field)}
++    metric = values["acceptance.metric_key"]
++    target = str(values["protocol.target_value"]).removesuffix(".0")
++    if values["protocol.target_kind"] == "relative_improvement_pct":
++        performance = f"{metric}: improve by at least {target}% over the pinned baseline"
++    else:
++        comparison = "<=" if values["acceptance.direction"] == "minimize" else ">="
++        performance = f"{metric} {comparison} {target} {values['acceptance.metric_unit']}"
++    operators = {"at_least": ">=", "at_most": "<=", "equal": "="}
++    operator = operators[values["protocol.quality_comparator"]]
++    limit = str(values["protocol.quality_limit"]).removesuffix(".0")
++    quality = (f"{values['protocol.quality_metric']} {operator} "
++               f"{limit} {values['protocol.quality_unit']}")
++    brief = {"record_id": record["record_id"], "revision": record["revision"],
++             "task": record["task"], "performance_target": performance, "quality_gate": quality,
++             "benchmark": values["protocol.quality_benchmark"], "conditions": values}
++    if "campaign_launch" in record:
++        brief["campaign_launch"] = record["campaign_launch"]
++        service_quality = _bound_service_quality(record)
++        if service_quality:
++            brief["quality_gate"] = _service_quality_line(
++                service_quality, values["protocol.quality_unit"])
++            values["protocol.quality_mode"] = service_quality["mode"]
++            values["protocol.quality_direction"] = service_quality["direction"]
++            if service_quality["mode"] == "baseline_comparison":
++                values["protocol.quality_baseline_tolerance"] = values.pop("protocol.quality_limit")
++                values["protocol.quality_reference"] = (
++                    "retained baseline score for the current comparison epoch")
++    elif values["protocol.comparison"] == "service_reuse":

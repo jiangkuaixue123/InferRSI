@@ -1,0 +1,86 @@
+diff --git a/docs/searchspace-index.json b/docs/searchspace-index.json
+index a897dd6d..7debef12 100644
+--- a/docs/searchspace-index.json
++++ b/docs/searchspace-index.json
+@@ -6,7 +6,7 @@
+     "skill_root": "src/inferrsi/knowledge/data/skill_library",
+     "matrix_sha256": "8e47da7aa4824d160710dee6ec63e91011f399def948b25a6bf74abe1bc45db9",
+     "catalog_sha256": "d243e2ae44c7badc8e68788153de35fe6ac31de618b7499fef6339eadf396871",
+-    "metadata_sha256": "fb1f0510dc77db12b240ee9030e90eef95e7c97e3f24071decd37d24c17b5a55"
++    "metadata_sha256": "edbcd984f7b81f83320af614300d1046f2d762b5a766629304c2043a48f45c40"
+   },
+   "skills": {
+     "ascend-aclgraph-capture-replay": {"path": "systems/platforms/ascend/ascend-aclgraph-capture-replay/SKILL.md", "state": "covered", "coordinates": [["Accelerator", "Configure"], ["Accelerator", "Diagnose"], ["Accelerator", "Optimize"], ["Accelerator", "Verify"]]},
+diff --git a/docs/skill-coverage.md b/docs/skill-coverage.md
+index c1850256..dcd56fa2 100644
+--- a/docs/skill-coverage.md
++++ b/docs/skill-coverage.md
+@@ -4,7 +4,7 @@ Generated from the registry, SKILL.md frontmatter and the two maintained
+ matrices. **Do not edit by hand**; regenerate after any registry, skill,
+ matrix or frozen-plan change.
+ 
+-- Input digest: `sha256:f3e30fec6b9e63c740c60eafe545c7032654e844c9d4a021715f55e028bceb75`
++- Input digest: `sha256:92c69021baed0614c5c4ce441762617af71e951e76ea177ae29abf83134b75db`
+ - Regenerate: `python tools/build_skill_coverage.py`
+ - Verify without writing: `python tools/build_skill_coverage.py --check`
+ 
+diff --git a/src/inferrsi/apps/cli/__init__.py b/src/inferrsi/apps/cli/__init__.py
+index fa276d52..068a0b4a 100644
+--- a/src/inferrsi/apps/cli/__init__.py
++++ b/src/inferrsi/apps/cli/__init__.py
+@@ -51,8 +51,7 @@ def _session_request(args):
+                         if field.name in values})
+ 
+ 
+-def _optimization_session(args, *, task_source=None, report_metadata=None,
+-                          prepare_project_only=False):
++def _optimization_session(args, *, task_source=None, report_metadata=None, complete_project=None):
+     from ...harness.executor import assess_packaged_task
+     from ...harness.manager import run_session
+     from ...knowledge.ranking_policy import managed_ranking_policy
+@@ -73,7 +72,7 @@ def _optimization_session(args, *, task_source=None, report_metadata=None,
+         knowledge_reader=KnowledgeReader() if args.session_action == "knowledge" else None,
+         external_knowledge=settings, external_project=external_project,
+         external_provider_for=_round_provider,
+-        report_metadata=report_metadata, prepare_project_only=prepare_project_only,
++        report_metadata=report_metadata, complete_project=complete_project,
+     )
+ 
+ 
+@@ -370,8 +369,10 @@ def _context(records: list[dict]) -> str:
+ 
+ 
+ def _task_command(args) -> int:
+-    """Read one task file and print to stdout; no subprocess or probe. Only
+-    ``task intake`` writes, and only its ``--record`` file.
++    """Read one task file and print to stdout; no subprocess, probe or file write.
++
++    ``task intake evaluate`` and ``answer`` are the exception: they also write the
++    caller-named ``--record`` file. They start no subprocess or probe either.
+     """
+     from . import task_input
+ 
+diff --git a/src/inferrsi/apps/cli/campaign_intake.py b/src/inferrsi/apps/cli/campaign_intake.py
+index 06485db9..a82a336c 100644
+--- a/src/inferrsi/apps/cli/campaign_intake.py
++++ b/src/inferrsi/apps/cli/campaign_intake.py
+@@ -8,7 +8,6 @@ from pathlib import Path
+ 
+ from ...harness.executor import service_revision
+ from ...harness.executor.candidates import identity
+-from ...harness.manager import initialize_session
+ from ..storage.artifacts import file_lock
+ from . import task_intake
+ 
+@@ -134,30 +133,41 @@ def start(args, run_session):
+             with tempfile.TemporaryDirectory(prefix="inferrsi-intake-") as tmp:
+                 staged_args = copy.copy(args)
+                 staged_args.session = Path(tmp) / "campaign"
+-                frozen = run_session(staged_args, prepare_project_only=True)
+-                plan = frozen["plan"]
+-                brief = gate["task_brief"]
+-                if args.evaluation_mode == "abba":
+-                    plan["evaluation_settings"]["quality_bound"] = {
+-                        key: brief["conditions"]["protocol.quality_" + key]
+-                        for key in ("metric", "comparator", "limit", "unit")
+-                    }

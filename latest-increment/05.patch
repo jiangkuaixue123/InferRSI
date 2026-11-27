@@ -1,0 +1,89 @@
+-            mechanism=mechanism, final_target=target,
++            mechanism=mechanism, final_target=final_target,
+         )
+     return assess_packaged(root, directory, plan, execution)
+diff --git a/src/inferrsi/harness/evaluator/_project.py b/src/inferrsi/harness/evaluator/_project.py
+index c4a25920..f3ad1e56 100644
+--- a/src/inferrsi/harness/evaluator/_project.py
++++ b/src/inferrsi/harness/evaluator/_project.py
+@@ -48,17 +48,21 @@ def meets_target(target, *, baseline, candidate, direction):
+     return (change if direction == "maximize" else -change) >= target["target_value"]
+ 
+ 
+-UNSPECIFIED_QUALITY_UNITS = ("", "unknown", "unspecified", "n/a")
+-
+-
+-def quality_unit_declared(unit) -> bool:
+-    return isinstance(unit, str) and unit.strip().lower() not in UNSPECIFIED_QUALITY_UNITS
++def validate_quality_unit(value) -> None:
++    """Require a named scoring unit, including for dimensionless results."""
++    if not isinstance(value, str) or value.strip().casefold() in {
++        "", "unknown", "unspecified", "n/a"
++    }:
++        raise ValueError("A concrete quality unit is required")
+ 
+ 
+ def quality_score_in_unit(score, reported_unit, approved_unit):
+     """Return the score in the frozen unit; only proportional scales can cross units."""
+-    if not (quality_unit_declared(reported_unit) and quality_unit_declared(approved_unit)):
+-        raise ValueError("quality_unit_mismatch")
++    try:
++        validate_quality_unit(reported_unit)
++        validate_quality_unit(approved_unit)
++    except ValueError as error:
++        raise ValueError("quality_unit_mismatch") from error
+     if reported_unit == approved_unit:
+         return score
+     scales = {"%": 2, "percent": 2, "fraction": 0, "ratio": 0}
+@@ -132,7 +136,8 @@ def inspect_project_step(
+ 
+ 
+ def assess_project(directory: Path, settings: dict, execution: dict, *,
+-                   mechanism: dict | None = None, final_target: dict | None = None) -> dict:
++                   mechanism: dict | None = None,
++                   final_target: dict | None = None) -> dict:
+     """Judge one attempt; ``mechanism`` is the declaration bound before execution."""
+     evidence = {}
+ 
+diff --git a/src/inferrsi/harness/evaluator/_service.py b/src/inferrsi/harness/evaluator/_service.py
+index 9e74f6e7..1e6bcf45 100644
+--- a/src/inferrsi/harness/evaluator/_service.py
++++ b/src/inferrsi/harness/evaluator/_service.py
+@@ -64,11 +64,9 @@ def service_metric_change(obj, candidate, reference):
+     return delta
+ 
+ 
+-def assess_service_performance(settings, measured, parent, initial, *, screening=False,
+-                               target=None, target_failure="performance_gate_not_met"):
++def assess_service_performance(settings, measured, parent, initial, *, screening=False):
+     metrics, limits, gain, actual_gain = {}, True, False, False
+-    objectives = settings["objectives"] if parent is not None else ()
+-    for obj in objectives:
++    for obj in settings["objectives"]:
+         name = obj["id"]
+         p = service_metric_change(obj, measured["values"][name], parent["values"][name])
+         b = service_metric_change(obj, measured["values"][name], initial["values"][name])
+@@ -94,38 +92,51 @@ def assess_service_performance(settings, measured, parent, initial, *, screening
+         limits &= bounded
+         actual_gain |= improved
+         gain |= metrics[name]["gain_passed"]
+-    passed = parent is None or (limits and (actual_gain if screening else gain))
+-    reason = "performance_gate_satisfied" if passed else "performance_gate_not_met"
+-    if passed and target:
+-        name = settings["ranking"][0]
+-        objective = next(obj for obj in settings["objectives"] if obj["id"] == name)
+-        passed = meets_target(target, baseline=initial["values"][name],
+-                              candidate=measured["values"][name], direction=objective["direction"])
+-        if passed is None:
+-            raise ValueError("Undefined relative performance target against the baseline")
+-        if not passed:
+-            reason = target_failure
+-    return {"passed": passed, "metrics": metrics, "reason": reason}
+-
+-
+-def assess_service_attempt_performance(plan, attempt, measured):
+-    """Apply the frozen gates identically during execution and evidence replay."""
++    passed = limits and (actual_gain if screening else gain)
++    return {
++        "passed": passed,
++        "metrics": metrics,

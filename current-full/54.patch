@@ -1,0 +1,120 @@
++      "environment.rounds": 4,
++      "protocol.timing_boundary": "server-side, includes queueing but not client transfer",
++      "protocol.comparison": "abba",
++      "protocol.quality_failure_policy": "revert_candidate",
++      "protocol.target_kind": "absolute",
++      "protocol.target_value": 180,
++      "protocol.quality_benchmark": "fixed-prompts-v1, held-out split",
++      "protocol.quality_metric": "token mismatches",
++      "protocol.quality_comparator": "at_most",
++      "protocol.quality_limit": 0,
++      "protocol.quality_unit": "tokens"
++    }
++  },
++  "acceptance": {
++    "source": "issue",
++    "values": {
++      "acceptance.metric_key": "p95_ttft",
++      "acceptance.metric_unit": "ms",
++      "acceptance.direction": "minimize",
++      "acceptance.min_improvement_pct": 10,
++      "acceptance.baseline_revision": "<baseline_sha>"
++    }
++  }
++}
+diff --git a/tests/fixtures/intake/performance/frozen-gate.yaml b/tests/fixtures/intake/performance/frozen-gate.yaml
+new file mode 100644
+index 00000000..ab858356
+--- /dev/null
++++ b/tests/fixtures/intake/performance/frozen-gate.yaml
+@@ -0,0 +1,8 @@
++schema_version: 1
++acceptance:
++  metric_key: p95_ttft
++  metric_unit: ms
++  direction: minimize
++  min_improvement_pct: 10
++  reference: plan/acceptance.md
++  baseline_revision: "<baseline_sha>"
+diff --git a/tests/fixtures/intake/performance/frozen-mismatch.yaml b/tests/fixtures/intake/performance/frozen-mismatch.yaml
+new file mode 100644
+index 00000000..eb2cd914
+--- /dev/null
++++ b/tests/fixtures/intake/performance/frozen-mismatch.yaml
+@@ -0,0 +1,8 @@
++schema_version: 1
++acceptance:
++  metric_key: p99_ttft
++  metric_unit: ms
++  direction: minimize
++  min_improvement_pct: 10
++  reference: plan/acceptance.md
++  baseline_revision: "<baseline_sha>"
+diff --git a/tests/fixtures/intake/performance/partial.json b/tests/fixtures/intake/performance/partial.json
+new file mode 100644
+index 00000000..c45db1c2
+--- /dev/null
++++ b/tests/fixtures/intake/performance/partial.json
+@@ -0,0 +1,15 @@
++{
++  "task": "task-performance",
++  "description": "A partial task-performance intake record: only the goal and timing boundary are stated, so evaluate asks the remaining first-batch questions only.",
++  "fields": {
++    "source": "prompt",
++    "values": {
++      "optimization.objective": "make the existing service faster without losing quality",
++      "protocol.timing_boundary": "server-side, includes queueing but not client transfer"
++    }
++  },
++  "acceptance": {
++    "source": "issue",
++    "values": {}
++  }
++}
+diff --git a/tests/fixtures/service_reuse.py b/tests/fixtures/service_reuse.py
+index 4e53452f..69147a29 100644
+--- a/tests/fixtures/service_reuse.py
++++ b/tests/fixtures/service_reuse.py
+@@ -12,6 +12,7 @@ from inferrsi.apps.cli import main
+ from inferrsi.apps.storage import artifacts
+ from inferrsi.harness.records import artifact_primitives, evidence, knowledge_capture
+ from inferrsi.knowledge import knowledge_operations
++from tests.fixtures.campaign_intake import approved_start, preparation_arguments
+ from tests.fixtures.diagnosis import diagnosis_args
+ 
+ 
+@@ -120,6 +121,7 @@ def settings():
+             "mode": "absolute",
+             "dataset": "synthetic",
+             "scorer": "exact-v1",
++            "unit": "points",
+             "samples": 2,
+             "key": "quality",
+             "direction": "maximize",
+@@ -174,7 +176,7 @@ def campaign(tmp_path, capsys):
+ 
+ def call(campaign, action, *extra, expected=0):
+     args = (
+-        campaign["start"]
++        approved_start(campaign["start"])
+         if action == "start"
+         else ["campaign", action, "--session", str(campaign["root"]), *map(str, extra)]
+     )
+@@ -207,5 +209,7 @@ def submit(campaign, *, expected=0, retry=None, **changes):
+ 
+ def rejected(arguments):
+     with pytest.raises(SystemExit) as raised:
++        if arguments[:2] == ["campaign", "start"]:
++            arguments = preparation_arguments(arguments)
+         main(arguments)
+     return raised.value.code
+diff --git a/tests/fixtures/service_reuse_protocol.py b/tests/fixtures/service_reuse_protocol.py
+index 4c3cf3ca..cd1a3e1b 100644
+--- a/tests/fixtures/service_reuse_protocol.py
++++ b/tests/fixtures/service_reuse_protocol.py
+@@ -70,6 +70,7 @@ if phase == "service":
+                 body.update(
+                     dataset="synthetic",
+                     scorer="exact-v1",
++                    unit=config.get("score_unit", "points"),
+                     samples=2,
