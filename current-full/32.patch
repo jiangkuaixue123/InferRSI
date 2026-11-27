@@ -1,0 +1,99 @@
++Prepare the campaign using the intended launch options with
++`inferrsi campaign start --prepare-intake --intake <record.json> ...`. This
++stages inputs for comparison with the intake without starting measurements.
++Resolve any mismatch and include the effective `task_brief.campaign_launch`
++in the read-back. For service reuse, the prepared configuration supplies the
++quality inequality and identifies the retained baseline if the limit is relative.
++
++When the prepared brief reports `brief_review` as `awaiting_confirmation`, show
++the full brief in the user's language. Include the metric and quality conditions,
++pinned setup, commands, scope, comparison protocol and time budget. Ask for a
++separate approve-or-revise decision and wait for a new explicit answer. Submit it
++against the issued `q:task_brief:...` ID. Re-evaluate and show a new card if the
++user revises the brief or the effective launch changes.
++
++Use read-only preparation while approval is pending. Once the executable brief is
++approved, run `inferrsi campaign start ... --intake <record.json>` with the same
++options. The campaign checks the approval and retains its intake receipt for
++replay. Device and service actions continue to require their own authorization.
+ 
+ ## Run the procedure
+ 
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json
+new file mode 100644
+index 00000000..ba21bf7e
+--- /dev/null
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json
+@@ -0,0 +1,309 @@
++{
++  "schema_version": 1,
++  "task": "task-performance",
++  "description": "Collect the performance and quality decisions, the reproducible setup, and the comparison protocol and budget. An acceptance issue or frozen task file supplies confirmed acceptance values. The prepared campaign needs separate approval of its complete task brief.",
++  "fields": [
++    {
++      "path": "optimization.objective",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "What outcome should this round improve under the agreed workload?",
++      "required_before": ["baseline_measurement", "candidate_search"]
++    },
++    {
++      "path": "acceptance.metric_key",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which measured metric decides whether that outcome improved?",
++      "options": [
++        {"value": "p95_ttft", "hint": "client-observed p95 time to first token"},
++        {"value": "throughput", "hint": "requests completed per second under the fixed load"},
++        {"value": "p95_tpot", "hint": "p95 time per output token"},
++        {"value": "peak_memory", "hint": "peak device memory under the fixed load"}
++      ],
++      "required_before": ["baseline_measurement", "candidate_search"]
++    },
++    {
++      "path": "acceptance.metric_unit",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "What unit does the benchmark report for that performance metric?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.direction",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "choice",
++      "question": "Does success require a lower value or a higher value for that metric?",
++      "options": [
++        {"value": "minimize", "hint": "lower is better"},
++        {"value": "maximize", "hint": "higher is better"}
++      ],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.min_improvement_pct",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "number",
++      "question": "What minimum percentage improvement lets a trial candidate replace the incumbent?",
++      "depends_on": ["acceptance.metric_key"],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.reference",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which acceptance issue or frozen task file should supply the confirmed gate values?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.baseline_revision",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which exact baseline revision should every comparison use?",
++      "required_before": ["candidate_search"]

@@ -1,0 +1,122 @@
++      "path": "optimization.framework",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which inference engine or framework runs the model?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.backend",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which execution backend should the benchmark use?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.device_model",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which device SKU should run the measurements?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.workload",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which requests, input shapes and concurrency should both sides replay?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.baseline_command",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which exact command measures the unchanged baseline under that workload?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.repetitions",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "integer",
++      "question": "How many measured repetitions should the baseline run? Provide a positive integer.",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.max_minutes",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "number",
++      "question": "How many minutes may the entire campaign use, including its final replay?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "protocol.comparison",
++      "user_choice": true,
++      "maps_to": "campaign-protocol",
++      "batch": 3,
++      "type": "choice",
++      "question": "Should this round alternate baseline and candidate trials or use the service-reuse protocol?",
++      "options": [
++        {"value": "abba", "hint": "alternate unchanged baseline and candidate under the same conditions"},
++        {"value": "service_reuse", "hint": "reuse one owned service within an attempt, then stop it before the next attempt"}
++      ],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.service_lifecycle",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 3,
++      "type": "text",
++      "question": "How should the protocol start, warm up, measure and stop the owned service, and which state should it clear?",
++      "depends_on": ["protocol.comparison"],
++      "required_when": {"field": "protocol.comparison", "equals": "service_reuse"},
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "environment.candidate_command",
++      "maps_to": "task-input/v1",
++      "batch": 3,
++      "type": "text",
++      "question": "Which exact command measures the candidate under the same workload and timing boundary?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "optimization.plane",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 3,
++      "type": "choice",
++      "question": "Which one SIAS plane is in scope for this round's changes?",
++      "options": [
++        {"value": "harness", "hint": "scheduling, batching, serving policy or harness code"},
++        {"value": "model", "hint": "model execution, kernels or precision"},
++        {"value": "infra", "hint": "runtime, drivers or device placement"}
++      ],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "environment.rounds",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 3,
++      "type": "integer",
++      "question": "What is the maximum number of candidate rounds? Provide a positive integer.",
++      "required_before": ["candidate_search"]
++    }
++  ]
++}
+diff --git a/tests/apps/test_codex_plugin.py b/tests/apps/test_codex_plugin.py
+index ec28f102..42ee2a77 100644
+--- a/tests/apps/test_codex_plugin.py
++++ b/tests/apps/test_codex_plugin.py
+@@ -18,6 +18,8 @@ import pytest
+ import yaml
+ 

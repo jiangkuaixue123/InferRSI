@@ -1,0 +1,81 @@
++    commit(campaign["repo"], quality=0.5, score_unit="%")
+     begin(campaign)
+-    result = submit(campaign, version="worse-quality", a=90, quality=0)
++    result = submit(campaign, version="worse-quality", a=90, quality=0.02, score_unit="fraction")
+     assert result["state"] == "paused"
+     assert result["latest_observation"]["assessment"]["quality_passed"] is False
+     resumed = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     repeated = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     assert resumed["stagnation"] == repeated["stagnation"]
+     assert resumed["state"] == "active"
++    accepted = submit(campaign, version="improved", a=90, quality=0.005, score_unit="fraction")
++    assert accepted["latest_observation"]["assessment"]["verdict"] == "PASS"
++    assert accepted["latest_observation"]["execution"]["quality_score"] == 0.5
+ 
+ 
+ def test_accepted_but_unselected_candidate_keeps_its_verdict(campaign):
+@@ -906,6 +942,7 @@ def test_existing_quality_reference_is_reused_only_when_compatible(campaign, com
+         "run_id": "previous-run",
+         "dataset": "synthetic",
+         "scorer": "exact-v1" if compatible else "incompatible-scorer",
++        "unit": "points",
+         "samples": 2,
+         "quality": 1,
+     }
+@@ -934,7 +971,7 @@ def test_reference_refresh_uses_baseline_cache_without_testing_parent_quality(
+     reference = {
+         "status": "completed", "revision": revision, "conditions": config["conditions"],
+         "service_id": "previous-service", "run_id": "previous-run",
+-        "dataset": "synthetic", "scorer": "exact-v1", "samples": 2, "quality": 1,
++        "dataset": "synthetic", "scorer": "exact-v1", "unit": "points", "samples": 2, "quality": 1,
+     }
+     protocol = Path(campaign["start"][campaign["start"].index("--protocol") + 1])
+     (protocol / "reference.json").write_text(json.dumps(reference))
+@@ -1775,7 +1812,7 @@ def test_standalone_capture_leaves_search_budget_and_reserve_intact(campaign, mo
+ def test_paired_and_explanation_switches_are_refused_in_service_mode(campaign, switch):
+     # Both switches read AB/BA pairs and profiles; service reuse must not silently drop them.
+     with pytest.raises(SystemExit):
+-        main([*campaign["start"], *switch])
++        main(preparation_arguments([*campaign["start"], *switch]))
+     campaign["capsys"].readouterr()
+     assert not (campaign["root"] / "plan.json").exists()
+ 
+@@ -1793,3 +1830,224 @@ def test_mechanism_declaration_is_refused_in_service_mode(campaign, tmp_path):
+     campaign["capsys"].readouterr()
+     state = json.loads((campaign["root"] / "state.json").read_text())
+     assert state["pending"] is None and not state.get("attempts", [])[1:]
++
++
++def test_service_start_compares_approved_gates_and_full_configuration(campaign):
++    from tests.fixtures.campaign_intake import approved_start
++
++    args = approved_start(campaign["start"])
++    original = json.loads(campaign["config"].read_bytes())
++    changed = settings()
++    changed["quality"]["threshold"] = 0
++    campaign["config"].write_text(json.dumps(changed))
++    assert main(args) == 2
++    blocked = json.loads(campaign["capsys"].readouterr().out)
++    assert blocked["reason"] == "launch_conflict"
++    assert blocked["conflicts"][0]["field"] == "protocol.quality_limit"
++    changed = settings()
++    changed["sampling"]["final"]["warmups"] += 1
++    campaign["config"].write_text(json.dumps(changed))
++    assert main(args) == 2
++    assert json.loads(campaign["capsys"].readouterr().out)["reason"] == "launch_changed"
++    assert not campaign["root"].exists()
++    campaign["config"].write_text(json.dumps(original))
++    assert main(args) == 0
++    plan = service_io.read(campaign["root"] / "plan.json")
++    assert (campaign["root"] / plan["intake_receipt"]).is_file()
++
++
++@pytest.mark.parametrize(("mode", "direction", "expected", "good", "bad"), [
++    ("absolute", "maximize", "accuracy >= 90 points (absolute threshold; higher is better)",
++     90, 89.95),
++    ("absolute", "minimize", "accuracy <= 90 points (absolute threshold; lower is better)",
++     89.95, 90.05),
++    ("baseline_comparison", "maximize",
++     "accuracy >= baseline accuracy - 0.1 points (baseline comparison; higher is better; "
++     "reference: retained baseline score for the current comparison epoch)", 89.95, 89.8),
++    ("baseline_comparison", "minimize",

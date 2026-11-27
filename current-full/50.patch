@@ -1,0 +1,86 @@
++        assert cli.main(["task", "intake", *cmd, *record]) == 2
++        error = json.loads(capsys.readouterr().out)
++        assert error["error"] == "invalid_value" and key in error["message"]
++        assert path.read_bytes() == unchanged
++    assert cli.main(["task", "intake", "answer", "--question", question["id"],
++                     "--value", str(valid), *record]) == 0
++    assert json.loads(capsys.readouterr().out)["fields"][key]["value"] == valid
++
++
++def test_loaded_approved_record_reopens_unusable_execution_values(project, tmp_path, capsys):  # noqa: F811
++    path = tmp_path / "intake.json"
++    record = approved_record()
++    invalid = {"environment.repetitions": 0, "environment.rounds": -1,
++               "environment.max_minutes": -5}
++    for key, value in invalid.items():
++        record["fields"][key]["value"] = value
++    record["complete"] = True
++    path.write_text(json.dumps(record))
++    assert cli.main(start_arguments(project, extra=("--intake", str(path)))) == 2
++    gate = json.loads(capsys.readouterr().out)
++    assert gate["status"] == "blocked" and gate["task_brief"] is None
++    assert gate["allowed_next"] == ["read_only_preparation"]
++    assert not project[3].exists()
++
++    cmd = ["task", "intake", "evaluate", "--record", str(path), "--json"]
++    assert cli.main(cmd) == 0
++    reopened = json.loads(capsys.readouterr().out)
++    assert all(reopened["fields"][key]["status"] == "unknown" for key in invalid)
++    assert "brief_decision" not in json.loads(path.read_text())
++    assert reopened["revision"] > record["revision"]
++    for key in ("environment.repetitions", "environment.max_minutes", "environment.rounds"):
++        token = card_id(task_intake.read_record(path), key)
++        assert cli.main(["task", "intake", "answer", "--record", str(path), "--json",
++                         "--question", token, "--value", "1"]) == 0
++        view = json.loads(capsys.readouterr().out)
++    assert view["brief_review"] == "awaiting_confirmation"
++    assert not view["complete"]
++
++
++@pytest.mark.parametrize(("field", "kind", "bad", "replacement"), [
++    ("environment.repetitions", "integer", 0, "1"),
++    ("environment.rounds", "integer", -1, "2"),
++    ("environment.max_minutes", "number", -5, "0.5"),
++])
++def test_packaged_launch_limit_reopens_on_read(tmp_path, capsys, field, kind, bad, replacement):
++    spec = task_intake.load_spec("task-performance")
++    definition = next(item for item in spec["fields"] if item["path"] == field)
++    assert (definition["maps_to"], definition["type"]) == ("task-input/v1", kind)
++    path = tmp_path / "previously-approved.json"
++    args = ["--record", str(path), "--json"]
++    record = approved_record()
++    record["fields"][field]["value"] = bad
++    task_intake.write_record(path, record)
++
++    assert cli.main(["task", "intake", "evaluate", *args]) == 0
++    response = json.loads(capsys.readouterr().out)
++    assert response["task_brief"] is None
++    assert response["allowed_next"] == ["read_only_preparation"]
++    question = next(q for q in response["questions"] if q["field"] == field)
++    assert "brief_decision" not in task_intake.read_record(path)
++    assert cli.main(["task", "intake", "answer", *args, "--question", question["id"],
++                     "--value", replacement]) == 0
++    corrected = json.loads(capsys.readouterr().out)
++    assert corrected["brief_review"] == "awaiting_confirmation"
++    assert corrected["fields"][field]["value"] == float(replacement)
++
++
++@pytest.mark.parametrize("placeholder", ["", "  ", "UnKnown", "UNSPECIFIED", " n/a "])
++def test_approved_intake_rejects_placeholder_quality_unit(project, capsys, placeholder):  # noqa: F811
++    command = approved_start(start_arguments(project))
++    path = Path(command[-1])
++    field = "protocol.quality_unit"
++    saved = task_intake.read_record(path)
++    saved["fields"][field]["value"] = placeholder
++    task_intake.write_record(path, saved)
++
++    assert cli.main(command) == 2
++    blocked = json.loads(capsys.readouterr().out)
++    assert blocked["task_brief"] is None
++    assert not project[3].exists()
++
++    base = ["task", "intake"]
++    record_args = ["--record", str(path), "--json"]
++    assert cli.main([*base, "evaluate", *record_args]) == 0
++    response = json.loads(capsys.readouterr().out)
++    question = next(item["id"] for item in response["questions"] if item["field"] == field)

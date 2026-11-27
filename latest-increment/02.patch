@@ -1,0 +1,77 @@
+-lead to different primary skills depending on whether the next deliverable is
+-a diagnosis, a correctness fix, a compatibility matrix or a measured gain.
+-Keep secondary work linked to the primary route. If competing deliverables
+-would lead to different first procedures, describe each outcome briefly and
+-ask which one to deliver first. Once selected, load the primary procedure
+-before searching for supporting evidence. Machine readers can use the route
+-cards below.
++Choose one primary skill by the requested deliverable. Load its full procedure
++before the first supporting evidence search. Record secondary tasks for follow-up.
++The route cards remain available to callers that consume the JSON summaries.
+ 
+ | Primary skill | Choose it when | Route card |
+ | --- | --- | --- |
+@@ -92,19 +87,13 @@ If the delivery is unclear, state both routes and ask what must be accepted.
+    `inferrsi skills enter task-version-alignment`. The compatibility card for
+    machine readers is available through
+    `inferrsi skills resource inference-task-router references/routes/version-align.json`.
+-2. For `task-day-0` or `task-performance`, open the selected skill's intake
+-   with `inferrsi task intake evaluate --task <selected-skill> --record <record.json>`.
+-   Use the returned questions to collect missing choices and the blockers to
+-   identify which work can proceed. Record a user's reply against the question
+-   ID issued for that choice. The performance procedure requires a separate
+-   decision on the completed brief before measured work.
+-3. Capture the actual run as the primary skill directs. Use observed triggers
++2. Capture the actual run as the primary skill directs. Use observed triggers
+    to choose supporting skills. Search for the named component or symptom with
+    `inferrsi find`. Resolve candidate skill IDs via `skills show`, read their
+    applicability, and retain only the source-backed matches. An exact owner
+    or resource can also be opened directly. If only cross-platform methodology
+    matches, return it as such, and list the missing target-specific evidence.
+-4. Record primary and secondary tasks, target conditions, fixed source references,
++3. Record primary and secondary tasks, target conditions, fixed source references,
+    gaps and acceptance evidence. A candidate skill is a starting point for
+    inspection. Execution and promotion require the normal workbench contracts.
+ 
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/SKILL.md b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/SKILL.md
+index 2f37fe65..648907f1 100644
+--- a/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/SKILL.md
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-day-0/SKILL.md
+@@ -32,6 +32,26 @@ metadata:
+ 
+ # Bring up a new model in an existing engine
+ 
++## Confirm the Day-0 inputs
++
++Start a fresh intake record in the target workspace before preparing a device
++run. Use the same launcher that loaded this skill.
++
++```text
++inferrsi task intake evaluate --task task-day-0 --record <record.json> --json
++```
++
++Supply facts the user already gave with `--source prompt`. If the intake returns
++questions, ask the first batch in the current conversation and wait for the
++answers. Record each answer with `task intake answer --record <record.json>
++--question <id> --value <value>` or `--unknown`, then re-evaluate. Preserve
++missing conditions and use `task intake summary` to report the confirmed inputs
++and blockers. Keep the Day-0 record with the handoff.
++
++While a `device_execution` blocker remains, use the available inputs for read-only
++preparation. After resolving the blockers, obtain device execution authorization
++before starting a target run.
++
+ ## Capture the actual run
+ 
+ Record the hardware vendor, device SKU, backend and driver, OS, model family and
+@@ -39,7 +59,7 @@ checkpoint revision, engine and plugin versions, and the exact run script and
+ flags. Attach the benchmark inputs, workload shape, dtype, reference or quality
+ oracle, and the user's acceptance criteria. Write down the current diagnosis
+ and its supporting observation, allowed search space, and remaining budget.
+-Mark missing fields as unknown and request the first one that affects a decision.
++Mark any additional unknowns that affect a comparison or execution decision.
+ 
+ ## Run the procedure
+ 
+diff --git a/tests/apps/test_codex_plugin.py b/tests/apps/test_codex_plugin.py
+index 4bc98969..42ee2a77 100644

@@ -1,0 +1,93 @@
++        "phase": record["phase"],
++        "primary_task": record["primary_task"],
++        "questions": questions,
++        "needs_user_input": bool(questions) or review == "changes_requested",
++        "brief_review": review,
++        "task_brief": brief,
++        "blockers": blockers,
++        "conflicts": conflicts,
++        "allowed_next": allowed_next,
++        "complete": complete,
++        "execution": "not started",
++        "fields": {
++            path: {"value": entry.get("value"), "source": entry.get("source"),
++                   "status": entry.get("status")}
++            for path, entry in record["fields"].items()
++        },
++    }
++
++
++def answer(record: dict, spec: dict, *, question_id: str, value: object = None,
++           unknown: bool = False) -> dict:
++    """Apply one answer to a copy of ``record``.
++
++    The question must be one ``evaluate`` previously recorded in
++    ``record["open_questions"]``; its dependency snapshot must still hold and
++    the field must still be open. A duplicate, stale or inapplicable delivery
++    is rejected, so a late reply to a superseded question changes nothing.
++    """
++    record = reconcile_record(record, spec)
++    open_questions = record.get("open_questions")
++    if not isinstance(open_questions, list):
++        raise IntakeError("invalid_record",
++                          "open_questions must be recorded by evaluate before answering")
++    question = next((item for item in open_questions
++                     if isinstance(item, dict) and item.get("id") == question_id), None)
++    if question is None:
++        answered = any(entry.get("source") == f"answer:{question_id}"
++                       for entry in record["fields"].values())
++        if answered:
++            raise IntakeError("already_answered",
++                              f"{question_id} was already recorded; re-evaluate for "
++                              "current questions")
++        prefix, separator, remainder = question_id.partition(":")
++        if prefix + separator == _QUESTION and remainder.partition(":")[0] in _field_paths(spec):
++            raise IntakeError("stale_answer",
++                              f"{question_id} is not open in the current record; re-evaluate")
++        raise IntakeError("unknown_question",
++                          f"No recorded open question {question_id}; run evaluate first")
++    if question_id.startswith(_BRIEF_QUESTION):
++        view = evaluate(record, spec)
++        if (view["brief_review"] != "awaiting_confirmation"
++                or view["task_brief"]["id"] != question_id):
++            raise IntakeError("stale_answer", "Present the current task brief before answering")
++        if unknown:
++            value = "revise"
++        if value not in ("approve", "revise"):
++            raise IntakeError("invalid_value", "Reply to the task brief with approve or revise")
++        record["brief_decision"] = {"question": question_id, "value": value}
++        record["open_questions"] = []
++        return record
++    fields = _field_paths(spec)
++    field = fields.get(question.get("field"))
++    if field is None:
++        raise IntakeError("unknown_question",
++                          f"{question_id} names a field outside {spec['task']}; re-evaluate")
++    if _question(record, field)["id"] != question_id:
++        raise IntakeError("stale_answer",
++                          f"{question_id} was asked before its dependencies changed; "
++                          "re-evaluate")
++    if not _applicable(record, field) or _entry(record, field["path"]).get("status") not in (
++        "unknown", "conflicting", "assumed",
++    ):
++        raise IntakeError("stale_answer",
++                          f"{question_id} no longer applies; re-evaluate")
++    updated = copy.deepcopy(record)
++    if unknown:
++        updated["fields"][field["path"]] = {
++            "value": None, "source": f"answer:{question_id}",
++            "status": "unknown", "asked": True,
++        }
++        _bump(updated, updated["revision"] + 1)
++    else:
++        source = f"answer:{question_id}"
++        updated["fields"][field["path"]] = {
++            "value": _coerce(field, value), "source": source,
++            "status": _status_for(field, source), "asked": True,
++        }
++        _bump(updated, updated["revision"] + 1)
++    updated["open_questions"] = [
++        item for item in updated["open_questions"] if item.get("id") != question_id]
++    return updated
++
++

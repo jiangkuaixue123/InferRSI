@@ -1,0 +1,122 @@
++    },
++    {
++      "path": "protocol.target_kind",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "choice",
++      "question": "Should the independent final meet a fixed performance bound or a minimum gain over the pinned baseline?",
++      "options": [{"value": "absolute"}, {"value": "relative_improvement_pct"}],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.target_value",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "number",
++      "question": "What value must the independent final reach, expressed in the metric unit for a fixed bound or in percent for a gain?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_benchmark",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "Which quality benchmark version or split and reference input set should each run use?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_metric",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "Which numerical quality result should the scorer report?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_comparator",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "choice",
++      "question": "Which relation between the scored quality result and its limit counts as passing?",
++      "options": [{"value": "at_least"}, {"value": "at_most"}, {"value": "equal"}],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_limit",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "number",
++      "question": "What number defines the quality limit or, for baseline-relative service reuse, the permitted regression?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_unit",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "What concrete unit or scale applies to the quality result and its limit?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "environment.quality_command",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which exact command scores output quality against the agreed benchmark?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_failure_policy",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "choice",
++      "question": "How should the round handle a candidate whose output fails the quality check?",
++      "options": [
++        {"value": "revert_candidate", "hint": "discard the candidate and keep the incumbent"},
++        {"value": "keep_with_flag", "hint": "retain the finding for planning only; measured campaigns require reverting a failed candidate"}
++      ],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.timing_boundary",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "Which events start and stop the timer, and are queueing and data transfer included?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.repository",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which project checkout supplies the baseline inputs and receives the candidate changes?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.model",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which model identifier or local model path should the run load?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.model_revision",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which exact model or checkpoint revision should both sides load?",
++      "required_before": ["candidate_search"]
++    },
++    {

@@ -1,0 +1,72 @@
++        "revision": "fixture", "attempt_id": "final", "conditions": {"effective_config": {}},
++    }
++    binding = {key: record[key] for key in ("revision", "attempt_id", "conditions")}
++    binding.update(service_id="service", run_id="run", effective_config={})
++
++    def write(path, document):
++        target = tmp_path / record["path"] / path
++        target.parent.mkdir(parents=True, exist_ok=True)
++        target.write_text(json.dumps(document), encoding="utf-8")
++
++    def stage(name, **document):
++        write(f"execution/{name}/result.json", dict(document, binding=binding, status="completed"))
++
++    write("request.json", binding)
++    write("effective-config.json", {})
++    write("service/owner.json", dict(binding, cwd="fixture", pid=123))
++    stage("precheck", passed=True)
++    stage("ready", ready=True, ownership="local_process_domain", owner_pid=123,
++          loaded_root="fixture", loaded_revision=record["revision"])
++    stage("measure-001", **measure)
++
++    gate = evaluator.service_trial_gate(plan, record, measured)
++    decision = evaluator.service_measurement_decision("final", None, gate, config["quality"])
++    score = None
++    if decision.assessment is None:
++        receipt = {"errors": 0.005, "unit": "fraction", "dataset": "fixture",
++                   "scorer": "test-scorer", "samples": 1}
++        stage("quality", **receipt)
++        score = evaluator.service_quality_score(config, receipt)
++        quality_ok = evaluator.service_quality_passed(config, score, initial["quality_score"])
++        decision = evaluator.service_quality_decision("final", gate, quality_ok)
++    assert decision.assessment["verdict"] == verdict
++    record.update(assessment=decision.assessment, execution={
++        "binding": binding, "measurements": measured, "quality_score": score,
++    })
++    assert _service_evidence.evaluation_reason(tmp_path, plan, record) is None
++    record["assessment"]["performance"]["passed"] = verdict != "PASS"
++    assert _service_evidence.evaluation_reason(tmp_path, plan, record) == (
++        "unverifiable_evaluation_evidence"
++    )
++
++
+ def test_screening_actual_gain_is_not_an_estimated_or_formal_threshold():
+     obj = objective()
+     config = {"objectives": [obj]}
+diff --git a/tests/harness/test_service_reference_evidence.py b/tests/harness/test_service_reference_evidence.py
+index 98c9bd33..70e1f2d2 100644
+--- a/tests/harness/test_service_reference_evidence.py
++++ b/tests/harness/test_service_reference_evidence.py
+@@ -115,6 +115,7 @@ def test_changed_external_baseline_quality_reference_blocks_final(campaign):
+         "run_id": "external-run",
+         "dataset": "synthetic",
+         "scorer": "exact-v1",
++        "unit": "points",
+         "samples": 2,
+         "quality": 1,
+     }
+diff --git a/tests/repository/check_installed.py b/tests/repository/check_installed.py
+index 008b28d9..2fcc63be 100644
+--- a/tests/repository/check_installed.py
++++ b/tests/repository/check_installed.py
+@@ -656,7 +656,9 @@ inventory = {
+     **_inventory(files("inferrsi").joinpath("knowledge", "data"), "knowledge/data"),
+     **_inventory(files("inferrsi").joinpath("resources", "repo_packs"), "resources/repo_packs"),
+ }
+-assert len(inventory) == 775, f"installed resource count is {len(inventory)}, expected 775"
++assert len(inventory) == 777, f"installed resource count is {len(inventory)}, expected 777"
++for task in ("task-day-0", "task-performance"):
++    assert f"knowledge/data/skill_library/tasks/{task}/intake.json" in inventory
+ for name in inventory:
+     if "/skill_library/" in name and name.endswith("/SKILL.md"):
+         assert name.removesuffix("SKILL.md") + "metadata.json" not in inventory, name

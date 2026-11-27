@@ -1,0 +1,109 @@
++    "source": "prompt",
++    "values": {
++      "optimization.objective": "make the existing service faster without losing quality",
++      "protocol.timing_boundary": "server-side, includes queueing but not client transfer"
++    }
++  },
++  "acceptance": {
++    "source": "issue",
++    "values": {}
++  }
++}
+diff --git a/tests/fixtures/service_reuse.py b/tests/fixtures/service_reuse.py
+index 4e53452f..69147a29 100644
+--- a/tests/fixtures/service_reuse.py
++++ b/tests/fixtures/service_reuse.py
+@@ -12,6 +12,7 @@ from inferrsi.apps.cli import main
+ from inferrsi.apps.storage import artifacts
+ from inferrsi.harness.records import artifact_primitives, evidence, knowledge_capture
+ from inferrsi.knowledge import knowledge_operations
++from tests.fixtures.campaign_intake import approved_start, preparation_arguments
+ from tests.fixtures.diagnosis import diagnosis_args
+ 
+ 
+@@ -120,6 +121,7 @@ def settings():
+             "mode": "absolute",
+             "dataset": "synthetic",
+             "scorer": "exact-v1",
++            "unit": "points",
+             "samples": 2,
+             "key": "quality",
+             "direction": "maximize",
+@@ -174,7 +176,7 @@ def campaign(tmp_path, capsys):
+ 
+ def call(campaign, action, *extra, expected=0):
+     args = (
+-        campaign["start"]
++        approved_start(campaign["start"])
+         if action == "start"
+         else ["campaign", action, "--session", str(campaign["root"]), *map(str, extra)]
+     )
+@@ -207,5 +209,7 @@ def submit(campaign, *, expected=0, retry=None, **changes):
+ 
+ def rejected(arguments):
+     with pytest.raises(SystemExit) as raised:
++        if arguments[:2] == ["campaign", "start"]:
++            arguments = preparation_arguments(arguments)
+         main(arguments)
+     return raised.value.code
+diff --git a/tests/fixtures/service_reuse_protocol.py b/tests/fixtures/service_reuse_protocol.py
+index 4c3cf3ca..cd1a3e1b 100644
+--- a/tests/fixtures/service_reuse_protocol.py
++++ b/tests/fixtures/service_reuse_protocol.py
+@@ -70,6 +70,7 @@ if phase == "service":
+                 body.update(
+                     dataset="synthetic",
+                     scorer="exact-v1",
++                    unit=config.get("score_unit", "points"),
+                     samples=2,
+                     quality=config.get("quality", 1),
+                 )
+diff --git a/tests/harness/test_project_objectives.py b/tests/harness/test_project_objectives.py
+index 0a0dccdf..8f2070ef 100644
+--- a/tests/harness/test_project_objectives.py
++++ b/tests/harness/test_project_objectives.py
+@@ -1,10 +1,12 @@
+ """Pure objective boundaries; these numbers are test controls, never campaign defaults."""
+ 
+ import copy
++import json
+ 
+ import pytest
+ 
+ from inferrsi.harness import evaluator
++from inferrsi.harness.evaluator import _service_evidence
+ 
+ 
+ def test_service_decisions_use_the_recorded_role_and_performance_gate():
+@@ -80,6 +82,76 @@ def test_combined_gain_and_dual_limits_include_exact_boundary():
+     assert not evaluator.prefer_service_measurements(config, {"a": 101, "b": 10}, base["values"])
+ 
+ 
++@pytest.mark.parametrize(("mode", "limit", "verdict"), [
++    ("absolute", 100, "PASS"),
++    ("absolute", 99, "FAIL"),
++    ("relative_improvement_pct", 1, "FAIL"),
++])
++def test_service_gate_replays_frozen_final_target(tmp_path, mode, limit, verdict):
++    metric = dict(objective(), key="latency", aggregate="median", scenario="case",
++                  domain={"min": 0, "max": 200})
++    config = {
++        "objectives": [metric], "ranking": ["a"],
++        "sampling": {"final": {"warmups": 0, "repetitions": 1}},
++        "scenarios": [
++            {"id": "case", "workload": "fixture", "requests": 1, "required_successes": 1},
++        ],
++        "quality": {
++            "mode": "absolute", "direction": "minimize", "threshold": 1, "key": "errors",
++            "dataset": "fixture", "scorer": "test-scorer", "samples": 1, "unit": "%",
++        },
++    }
++    plan = {"evaluation_settings": config,
++            "performance_target": {"target_kind": mode, "target_value": limit}}
++    measure = {"scenarios": {"case": {
++        "workload": "fixture", "requests": 1, "successes": 1, "units": {"a": "ms"}, "latency": 100,
++    }}}
++    measured = evaluator.aggregate_service_measurements(config, [measure], "final")
++    initial = {"measurements": measured, "quality_score": 0.5}
++    record = {
++        "path": "final/attempt", "role": "final", "parent": None, "initial": initial,
