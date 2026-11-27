@@ -1,0 +1,85 @@
++    view = intake.evaluate(record, spec)
++    assert view["complete"] is True
++    assert "device_execution" not in view["allowed_next"]
++
++
++def test_partial_fixture_asks_only_the_remaining_first_batch():
++    spec = spec_for()
++    record = build(set(PARTIAL["fields"]["values"]))
++    view = intake.evaluate(record, spec)
++    asked = {question["field"] for question in view["questions"]}
++    assert "optimization.objective" not in asked
++    assert "protocol.timing_boundary" not in asked
++    assert "acceptance.metric_key" in asked
++
++
++def test_frozen_conflict_via_cli(tmp_path, capsys):
++    record_path = tmp_path / "complete.json"
++    record_path.write_text(json.dumps(build()), encoding="utf-8")
++    assert cli.main([
++        "task", "intake", "evaluate", "--record", str(record_path),
++        "--frozen", str(PERFORMANCE / "frozen-mismatch.yaml"), "--json",
++    ]) == 0
++    result = json.loads(capsys.readouterr().out)
++    assert result["complete"] is False
++    assert result["conflicts"][0]["field"] == "acceptance.metric_key"
++    assert result["conflicts"][0]["frozen_value"] == "p99_ttft"
++
++
++def test_self_written_gate_keeps_campaign_blocked(project, tmp_path, capsys):  # noqa: F811
++    record_path = tmp_path / "record.json"
++    gate_file = tmp_path / "gate.json"
++    proposed = {**COMPLETE["acceptance"]["values"], intake.REFERENCE: str(gate_file)}
++    gate_file.write_text(json.dumps({"schema_version": 1, "acceptance": {
++        key.removeprefix("acceptance."): value for key, value in proposed.items()
++    }}))
++    cmd = ["task", "intake", "evaluate", "--record", str(record_path), "--json"]
++    guesses = dict(COMPLETE["fields"]["values"])
++    guesses.pop(intake.REFERENCE)
++    for source, values, options in (
++        ("workspace", guesses, ["--task", "task-performance"]),
++        ("frozen_gate", proposed, ["--frozen", str(gate_file)]),
++    ):
++        args = []
++        for key, value in values.items():
++            args.extend(("--set", f"{key}={value}"))
++        assert cli.main([*cmd, *options, "--source", source, *args]) == 0
++        result = json.loads(capsys.readouterr().out)
++    assert result["needs_user_input"] and not result["complete"]
++    assert result["allowed_next"] == ["read_only_preparation"]
++    questions = {q["field"]: q for q in result["questions"]}
++    assert {"optimization.objective", "acceptance.metric_key", intake.REFERENCE} <= questions.keys()
++    metric_option = questions["acceptance.metric_key"]["options"][0]
++    assert metric_option["value"] == proposed["acceptance.metric_key"]
++    assert result["fields"]["environment.backend"]["status"] == "confirmed"
++    assert result["fields"]["optimization.objective"]["status"] == "assumed"
++    assert result["fields"]["acceptance.metric_key"]["status"] == "assumed"
++    assert cli.main([*cmd, "--set", f"{intake.REFERENCE}={gate_file}"]) == 2
++    assert json.loads(capsys.readouterr().out)["error"] == "user_answer_required"
++    assert cli.main(start_arguments(project, extra=("--intake", str(record_path)))) == 2
++    capsys.readouterr()
++    assert not project[3].exists()
++
++    record = json.loads(record_path.read_text())
++    for field in record["fields"].values():
++        field["status"] = "confirmed"
++    record.update(complete=True, open_questions=[], allowed_next=["candidate_search"])
++    record_path.write_text(json.dumps(record))
++    assert task_intake.campaign_gate(record_path)[0]["status"] == "blocked"
++
++
++def test_selected_gate_imports_only_its_values_and_changed_file_reopens_card(tmp_path, capsys):
++    record = tmp_path / "record.json"
++    gate = tmp_path / "gate.yaml"
++    gate.write_bytes((PERFORMANCE / "frozen-gate.yaml").read_bytes())
++    cmd = ["task", "intake", "evaluate", "--record", str(record), "--json"]
++    assert cli.main([*cmd, "--task", "task-performance"]) == 0
++    capsys.readouterr()
++    reference_card = card_id(task_intake.read_record(record), intake.REFERENCE)
++    answer = ["task", "intake", "answer", "--record", str(record), "--question",
++              reference_card, "--value", str(gate), "--frozen", str(gate), "--json"]
++    assert cli.main(answer) == 0
++    view = json.loads(capsys.readouterr().out)
++    assert view["fields"]["acceptance.metric_key"]["status"] == "confirmed"
++    assert view["fields"][intake.REFERENCE]["source"] == "answer:" + reference_card
++    assert cli.main([*cmd, "--source", "frozen_gate", "--set",

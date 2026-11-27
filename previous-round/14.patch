@@ -1,0 +1,12 @@
+diff --git a/tests/harness/test_service_reference_evidence.py b/tests/harness/test_service_reference_evidence.py
+index 1f1e1fbf..9f70fb78 100644
+--- a/tests/harness/test_service_reference_evidence.py
++++ b/tests/harness/test_service_reference_evidence.py
+@@ -115,6 +115,7 @@ def test_changed_external_baseline_quality_reference_blocks_final(campaign):
+         "run_id": "external-run",
+         "dataset": "synthetic",
+         "scorer": "exact-v1",
++        "unit": "points",
+         "samples": 2,
+         "quality": 1,
+     }

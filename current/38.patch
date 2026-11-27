@@ -1,0 +1,89 @@
++    old_fields["protocol.quality_limit"] = old_fields.pop("protocol.quality_baseline_tolerance")
++    for key in ("quality_reference", "quality_direction", "quality_mode"):
++        old_fields.pop("protocol." + key)
++    payload = json.dumps(old_brief, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
++    old_id = "q:task_brief:" + hashlib.sha256(payload.encode()).hexdigest()
++    record["brief_decision"]["question"] = old_id
++    task_intake.write_record(path, record)
++    assert main(args) == 2
++    reopened = json.loads(campaign["capsys"].readouterr().out)
++    assert reopened["brief_review"] == "awaiting_confirmation"
++    assert "baseline quality + 0.1 points" in reopened["task_brief"]["quality_gate"]
++    assert not campaign["root"].exists()
++
++
++def test_legacy_relative_maximize_reopens_comparator_before_a_new_card(campaign):
++    from inferrsi.apps.cli import task_intake
++    from tests.fixtures.campaign_intake import approved_start
++
++    config = settings()
++    config["quality"].pop("threshold")
++    config["quality"].update(mode="baseline_comparison", tolerance=0.1)
++    campaign["config"].write_text(json.dumps(config))
++    args = approved_start(campaign["start"])
++    path = Path(args[-1])
++    record = task_intake.read_record(path)
++    record["fields"]["protocol.quality_comparator"]["value"] = "at_most"
++    task_intake.write_record(path, record)
++    assert main(args) == 2
++    gate = json.loads(campaign["capsys"].readouterr().out)
++    assert gate["task_brief"] is None
++    assert gate["questions"][0]["field"] == "protocol.quality_comparator"
++    assert not campaign["root"].exists()
++
++
++def test_service_planning_brief_marks_quality_inputs_provisional(campaign):
++    from inferrsi.apps.cli import task_intake
++    from tests.fixtures.campaign_intake import approved_start
++
++    cfg = settings()
++    cfg["quality"].pop("threshold")
++    cfg["quality"].update(mode="baseline_comparison", tolerance=0.1)
++    campaign["config"].write_text(json.dumps(cfg))
++    args = approved_start(campaign["start"], overrides={"protocol.quality_unit": "points"})
++    path = Path(args[-1])
++    record = task_intake.read_record(path)
++    record.pop("campaign_launch")
++    record.pop("brief_decision")
++    task_intake.write_record(path, record)
++    planning, _ = task_intake.campaign_gate(path)
++    brief = planning["task_brief"]
++    assert brief["quality_gate_status"] == "provisional"
++    assert "Provisional service quality inputs: quality, 0.1 points" in task_intake.render(planning)
++    assert "quality >= 0.1" not in brief["quality_gate"]
++    assert main([*args, "--prepare-intake"]) == 0
++    prepared = json.loads(campaign["capsys"].readouterr().out)
++    assert prepared["brief_review"] == "awaiting_confirmation"
++    assert prepared["task_brief"]["id"] != brief["id"]
++    assert "quality >= baseline quality - 0.1 points" in prepared["task_brief"]["quality_gate"]
++    assert not campaign["root"].exists()
++
++
++@pytest.mark.parametrize(("mode", "baseline", "limit", "score", "unit", "verdict"), [
++    ("absolute", 0.5, 1, 0.02, "fraction", "FAIL"),
++    ("absolute", 0.5, 1, 0.005, "fraction", "PASS"),
++    ("absolute", 0.5, 1, 0.005, None, "INCONCLUSIVE"),
++    ("absolute", 0.5, 1, 0.005, "tokens", "INCONCLUSIVE"),
++    ("baseline_comparison", 2, 1, 0.03, "fraction", "PASS"),
++    ("baseline_comparison", 2, 1, 0.0301, "fraction", "FAIL"),
++])
++def test_service_scores_in_the_approved_quality_unit(campaign, mode, baseline, limit,
++                                                     score, unit, verdict):
++    from inferrsi.apps.cli import task_intake
++    from tests.fixtures.campaign_intake import approved_start
++
++    config = settings()
++    quality = config["quality"]
++    quality.pop("threshold")
++    quality.update(mode=mode, direction="minimize", unit="%")
++    quality["tolerance" if mode == "baseline_comparison" else "threshold"] = limit
++    campaign["config"].write_text(json.dumps(config))
++    args = approved_start(campaign["start"])
++    gate, _ = task_intake.campaign_gate(Path(args[-1]))
++    assert gate["task_brief"]["campaign_launch"]["evaluation_settings"]["quality"]["unit"] == "%"
++    if mode == "baseline_comparison":
++        assert "1 percentage point " in gate["task_brief"]["quality_gate"]
++    changed = copy.deepcopy(config)
++    changed["quality"]["unit"] = "fraction"
++    campaign["config"].write_text(json.dumps(changed))
++    assert main(args) == 2

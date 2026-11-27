@@ -1,0 +1,89 @@
++                if args.evaluation_mode == "abba":
++                    plan["evaluation_settings"]["quality_bound"] = {
++                        key: brief["conditions"]["protocol.quality_" + key]
++                        for key in ("metric", "comparator", "limit", "unit")
++                    }
++                launch, expected = _execution(plan, args, staged_args.session)
+                 conflicts = _conflicts(brief["conditions"], expected, args)
+                 if conflicts:
+                     return _blocked("launch_conflict", conflicts=conflicts)
+@@ -159,11 +165,6 @@ def _initialize(staged, destination, plan, record, gate):
+         primary = next(obj for obj in settings["objectives"] if obj["id"] == settings["ranking"][0])
+         if primary["threshold_type"] != "relative_percent":
+             plan["candidate_min_improvement_pct"] = conditions["acceptance.min_improvement_pct"]
+-    else:
+-        plan["evaluation_settings"]["quality_bound"] = {
+-            name: conditions["protocol.quality_" + name]
+-            for name in ("metric", "comparator", "limit")
+-        }
+     receipt = task_intake.attach_record(staged, record, gate)["intake"]
+     relative = "plan/intake-" + receipt["sha256"] + ".json"
+     task_intake.write_record(staged / relative, receipt)
+diff --git a/src/inferrsi/apps/cli/intake_contract.py b/src/inferrsi/apps/cli/intake_contract.py
+index ce197875..fcb3d778 100644
+--- a/src/inferrsi/apps/cli/intake_contract.py
++++ b/src/inferrsi/apps/cli/intake_contract.py
+@@ -1,15 +1,7 @@
+-"""intake/v1: host-independent task intake records for missing-field confirmation.
+-
+-A card, a numbered text fallback and an optional check-in interview all write the
+-same record. The record separates what the user stated (``confirmed``), what a
+-card answer proposes (``proposed``), what stays unknown (``unknown``) and what
+-conflicts (``conflicting``). ``evaluate`` selects the questions that unblock the
+-next stage, derives ``allowed_next`` and never authenticates acceptance
+-thresholds: a proposal kept in a record does not freeze a gate.
+-
+-The contract performs no I/O. Mapped numeric values use the task-input validator. Callers in
+-``inferrsi.apps.cli.task_intake`` load the versioned spec and record, then call these
+-pure functions. ``source`` is declared by the caller and is not authenticated.
++"""intake/v1: pure functions over task intake records; no I/O.
++
++A proposal kept in a record never freezes an acceptance gate, and ``source`` is
++declared by the caller, not authenticated.
+ """
+ 
+ from __future__ import annotations
+@@ -19,6 +11,7 @@ import hashlib
+ import json
+ import math
+ 
++from ...harness.project import quality_unit_declared
+ from . import task_input
+ 
+ SCHEMA_VERSION = 1
+@@ -140,7 +133,6 @@ def validate_spec(spec: object) -> list[dict]:
+ 
+ 
+ def load_spec(spec: object) -> dict:
+-    """Validate and return the spec; raise ``IntakeError('invalid_spec')``."""
+     problems = validate_spec(spec)
+     if problems:
+         first = problems[0]
+@@ -167,7 +159,6 @@ def new_record(task: str, *, record_id: str, primary_source: str = "prompt") ->
+ 
+ 
+ def validate_record(record: object, spec: dict) -> list[dict]:
+-    """Return field-level problems in a record against its spec."""
+     problems: list[dict] = []
+ 
+     def bad(field: str, message: str) -> None:
+@@ -182,6 +173,8 @@ def validate_record(record: object, spec: dict) -> list[dict]:
+     revision = record.get("revision")
+     if type(revision) is not int or revision < 1:
+         bad("revision", "must be a positive integer")
++    if not isinstance(record.get("open_questions", []), list):
++        bad("open_questions", "must be a list of issued questions")
+     primary = record.get("primary_task")
+     if not isinstance(primary, dict) or primary.get("status") not in STATUSES:
+         bad("primary_task", "must carry a value, source and known status")
+@@ -274,11 +267,18 @@ def _coerce(field: dict, value: object) -> object:
+         problem = task_input.field_value_problem(mapped, typed)
+         if problem:
+             raise IntakeError("invalid_value", f"{mapped.path} {problem}")
++    if field["path"] == "protocol.quality_unit" and not quality_unit_declared(typed):
++        raise IntakeError("invalid_value", f"{field['path']} must name a unit, not {typed!r}")
+     return typed
+ 
+ 
++def _card_source(path: str, source: str) -> bool:
++    # Older settled answers retain their field-only provenance.

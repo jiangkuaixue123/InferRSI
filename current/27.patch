@@ -1,0 +1,89 @@
++                      "target_value": plan["candidate_min_improvement_pct"]}
++        elif role == "final":
++            target = plan.get("performance_target")
++            target_failure = "final_performance_target_not_met"
+         gate = (
+             evaluator.assess_service_performance(
+-                settings, measured, parent["measurements"], initial["measurements"]
++                settings, measured, parent["measurements"], initial["measurements"],
++                target=target, target_failure=target_failure,
+             )
+             if parent is not None
+             else {"passed": True, "metrics": {}}
+diff --git a/src/inferrsi/harness/executor/serving/_plan.py b/src/inferrsi/harness/executor/serving/_plan.py
+index d7c979f1..97ba0b88 100644
+--- a/src/inferrsi/harness/executor/serving/_plan.py
++++ b/src/inferrsi/harness/executor/serving/_plan.py
+@@ -6,6 +6,7 @@ import subprocess
+ import time
+ from pathlib import Path
+ 
++from ...evaluator import quality_unit_declared
+ from ...records import service_io
+ from ...records.atomic_json import atomic_write_json
+ from ..candidates import members, retain
+@@ -24,7 +25,7 @@ def validate_service_conditions(conditions):
+     service_io.no_fingerprints(conditions)
+ 
+ 
+-def validate_service_settings(settings):
++def validate_service_settings(settings, *, require_quality_unit=False):
+     service_io.no_fingerprints(settings)
+     for name in ("conditions", "commands", "sampling", "quality", "stagnation"):
+         if not isinstance(settings.get(name), dict):
+@@ -139,6 +140,10 @@ def validate_service_settings(settings):
+         )
+     ):
+         raise ValueError("Declare quality mode, direction, dataset, scorer and key")
++    if (require_quality_unit or "unit" in quality) and not quality_unit_declared(
++        quality.get("unit")
++    ):
++        raise ValueError("Declare an explicit quality unit")
+     gate = "threshold" if quality["mode"] == "absolute" else "tolerance"
+     if type(quality.get("samples")) is not int or quality["samples"] < 1:
+         raise ValueError("Declare the required quality sample count")
+@@ -232,7 +237,7 @@ def prepare_service(root, args):
+     from inferrsi import __version__
+ 
+     settings = service_io.read(args.evaluation_config)
+-    validate_service_settings(settings)
++    validate_service_settings(settings, require_quality_unit=True)
+     source, protocol = args.repo.resolve(), args.protocol.resolve()
+     if args.repo.is_symlink() or args.protocol.is_symlink():
+         raise ValueError("Project and protocol roots cannot be symbolic")
+diff --git a/src/inferrsi/harness/manager/__init__.py b/src/inferrsi/harness/manager/__init__.py
+index 44e783b3..e277e3c7 100644
+--- a/src/inferrsi/harness/manager/__init__.py
++++ b/src/inferrsi/harness/manager/__init__.py
+@@ -34,6 +34,7 @@ from ._requests import (
+ from ._runner import run_experiment
+ from ._runtime import session_runtime_identity
+ from ._session import run_session
++from ._state import initialize as initialize_session
+ from ._state import read_session_records
+ from .search._engine import EngineSearchPlan, read_engine_search, run_engine_search
+ 
+@@ -43,7 +44,7 @@ __all__ = [
+     "ReadSessionKnowledge", "RecoverSession", "RefreshSessionReferences",
+     "ResumeSession", "SessionRequest", "SessionStatus",
+     "StartBenchmarkSession", "StartProjectSession",
+-    "read_session_records", "run_session",
++    "initialize_session", "read_session_records", "run_session",
+     "AGENT_TERMINAL_STATES", "agent_session_status", "bind_agent_session",
+     "dispatch_agent_session", "prepare_agent_session", "record_agent_session",
+     "EngineSearchPlan", "read_engine_search", "run_engine_search", "run_experiment",
+diff --git a/src/inferrsi/harness/manager/_requests.py b/src/inferrsi/harness/manager/_requests.py
+index c0a5b200..7ebd2a31 100644
+--- a/src/inferrsi/harness/manager/_requests.py
++++ b/src/inferrsi/harness/manager/_requests.py
+@@ -47,6 +47,7 @@ class StartProjectSession(_StartSession):
+     metric_key: str | None = None
+     metric_unit: str | None = None
+     quality_key: str | None = None
++    quality_benchmark: str | None = None
+     scope: str | None = None
+     direction: Literal["minimize", "maximize"] | None = None
+     min_improvement_pct: float | None = None
+diff --git a/src/inferrsi/harness/manager/_session.py b/src/inferrsi/harness/manager/_session.py
+index 88cf6326..ef794167 100644
+--- a/src/inferrsi/harness/manager/_session.py

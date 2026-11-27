@@ -1,0 +1,80 @@
++    assert next_view["brief_review"] == "awaiting_confirmation"
++    assert intake.answer(changed, spec, question_id=next_view["task_brief"]["id"],
++                         value="approve")["brief_decision"]["value"] == "approve"
++
++
++@pytest.mark.parametrize("reply", [{"value": "revise"}, {"unknown": True}])
++def test_returned_brief_waits_for_edits_then_requires_new_review(reply):
++    spec = spec_for()
++    record, view = ask(build(), spec)
++    record = intake.answer(record, spec, question_id=view["task_brief"]["id"], **reply)
++    view = intake.evaluate(record, spec)
++    assert not view["complete"] and not view["questions"]
++    assert view["brief_review"] == "changes_requested"
++    with pytest.raises(intake.IntakeError):
++        intake.answer(record, spec, question_id=view["task_brief"]["id"], value="approve")
++    edited = intake.set_fields(record, spec, {"protocol.quality_limit": 2}, source="prompt")
++    edited, _ = ask(edited, spec)
++    edited = intake.answer(edited, spec, question_id=card_id(edited, "protocol.quality_limit"),
++                          value=2)
++    assert intake.evaluate(edited, spec)["brief_review"] == "awaiting_confirmation"
++
++
++def test_campaign_checks_live_gate_and_exact_brief(project, tmp_path, capsys):  # noqa: F811
++    gate = tmp_path / "gate.yaml"
++    gate.write_bytes((PERFORMANCE / "frozen-gate.yaml").read_bytes())
++    path = tmp_path / "record.json"
++    args = ["task", "intake", "evaluate", "--task", "task-performance", "--record",
++            str(path), "--frozen", str(gate), "--json"]
++    for key, value in (COMPLETE["fields"]["values"] | {intake.REFERENCE: str(gate)}).items():
++        args.extend(("--set", f"{key}={value}"))
++    assert cli.main(args) == 0
++    brief = json.loads(capsys.readouterr().out)["task_brief"]
++    assert cli.main(start_arguments(project, extra=("--intake", str(path)))) == 2
++    assert json.loads(capsys.readouterr().out)["brief_review"] == "awaiting_confirmation"
++    assert not project[3].exists()
++    assert cli.main(["task", "intake", "answer", "--record", str(path), "--question",
++                     brief["id"], "--value", "approve", "--json"]) == 0
++    assert json.loads(capsys.readouterr().out)["complete"]
++    gate.write_bytes((PERFORMANCE / "frozen-mismatch.yaml").read_bytes())
++    assert cli.main(start_arguments(project, extra=("--intake", str(path)))) == 2
++    assert json.loads(capsys.readouterr().out)["brief_review"] == "collecting_inputs"
++    assert not project[3].exists()
++
++
++def test_old_or_modified_record_cannot_reuse_a_cached_approval(tmp_path):
++    path = tmp_path / "record.json"
++    record = approved_record()
++    record["fields"]["environment.rounds"]["value"] += 1
++    path.write_text(json.dumps(record))
++    assert task_intake.campaign_gate(path)[0]["brief_review"] == "awaiting_confirmation"
++    record.pop("brief_decision")
++    del record["fields"]["protocol.target_value"]
++    record["complete"] = True
++    path.write_text(json.dumps(record))
++    assert task_intake.campaign_gate(path)[0]["brief_review"] == "collecting_inputs"
++
++
++def test_brief_displays_the_full_precision_of_both_thresholds():
++    record = build()
++    for path in ("protocol.target_value", "protocol.quality_limit"):
++        record["fields"][path]["value"] = 0.123456789
++    brief = intake.evaluate(record, spec_for())["task_brief"]
++    assert brief["performance_target"] == "p95_ttft <= 0.123456789 ms"
++    assert brief["quality_gate"] == "token mismatches <= 0.123456789 tokens"
++
++
++def test_user_can_choose_a_different_gate_after_returning_the_brief(tmp_path, capsys):
++    path = tmp_path / "intake.json"
++    record, view = ask(build(), spec_for())
++    path.write_text(json.dumps(record))
++    assert cli.main(["task", "intake", "answer", "--record", str(path), "--question",
++                     view["task_brief"]["id"], "--value", "revise", "--json"]) == 0
++    assert json.loads(capsys.readouterr().out)["brief_review"] == "changes_requested"
++    gate = PERFORMANCE / "frozen-mismatch.yaml"
++    assert cli.main(["task", "intake", "evaluate", "--record", str(path), "--set",
++                     f"{intake.REFERENCE}={gate}", "--frozen", str(gate), "--json"]) == 0
++    updated = json.loads(capsys.readouterr().out)
++    assert updated["fields"]["acceptance.metric_key"]["value"] == "p99_ttft"
++    assert updated["fields"]["acceptance.metric_key"]["source"] == "frozen_gate"
++    assert updated["brief_review"] == "awaiting_confirmation"

@@ -1,0 +1,114 @@
++        "schema_version": SCHEMA_VERSION,
++        "task": spec["task"],
++        "record_id": record["record_id"],
++        "revision": view["revision"],
++        "primary_task": record["primary_task"],
++        "phase": record["phase"],
++        "task_brief": view["task_brief"],
++        "brief_review": view["brief_review"],
++        "confirmed": confirmed,
++        "proposed": proposed,
++        "unknown": unknown,
++        "conflicts": view["conflicts"],
++        "blockers": view["blockers"],
++        "allowed_next": view["allowed_next"],
++        "complete": view["complete"],
++        "execution": "not started",
++    }
+diff --git a/src/inferrsi/apps/cli/task_input.py b/src/inferrsi/apps/cli/task_input.py
+index 7f5b3f8c..613056ba 100644
+--- a/src/inferrsi/apps/cli/task_input.py
++++ b/src/inferrsi/apps/cli/task_input.py
+@@ -208,7 +208,7 @@ def _http_url(value: str) -> str | None:
+     return None
+ 
+ 
+-def _check(field: Field, value: object) -> str | None:
++def field_value_problem(field: Field, value: object) -> str | None:
+     """Return why ``value`` (never None) is invalid for ``field``, or None."""
+     if not _encodable(value):
+         return "must be valid Unicode text"
+@@ -317,7 +317,7 @@ def validate(data: object) -> list[dict[str, str]]:
+             if field is None:
+                 errors.append(_error(f"{section}.{name}", "is not a v1 task field"))
+             elif value is not None:
+-                problem = _check(field, value)
++                problem = field_value_problem(field, value)
+                 if problem:
+                     errors.append(_error(field.path, problem))
+     return errors
+@@ -470,7 +470,7 @@ def merge(
+         raw = values.get(field.name) if isinstance(values, dict) else None
+         if field.section in sections and not isinstance(values, dict):
+             value, source = None, "invalid"
+-        elif raw is not None and _check(field, raw) is None:
++        elif raw is not None and field_value_problem(field, raw) is None:
+             value, source = _normalize(field, raw, base), "yaml"
+         elif raw is not None:
+             value, source = None, "invalid"
+@@ -481,7 +481,7 @@ def merge(
+         supplied = overrides.pop(field.dest, None) if field.dest else None
+         if supplied is not None:  # None means the caller did not supply the flag
+             supplied = _flag_value(field, supplied)
+-            problem = _check(field, supplied)
++            problem = field_value_problem(field, supplied)
+             if problem:
+                 errors.append(_error(field.path, f"{field.flag} {problem}", "cli"))
+             elif field.acceptance:
+diff --git a/src/inferrsi/apps/cli/task_intake.py b/src/inferrsi/apps/cli/task_intake.py
+new file mode 100644
+index 00000000..4d9c565b
+--- /dev/null
++++ b/src/inferrsi/apps/cli/task_intake.py
+@@ -0,0 +1,353 @@
++"""intake/v1 CLI: load spec and record, apply ``intake_contract``, write the record back."""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import tempfile
++import uuid
++from importlib.resources import files
++from pathlib import Path
++
++from ..storage.artifacts import file_lock
++from . import intake_contract as intake
++
++
++def _spec_root() -> Path:
++    return Path(str(files("inferrsi").joinpath("knowledge", "data", "skill_library", "tasks")))
++
++
++def spec_path(task: str) -> Path:
++    return _spec_root() / task / "intake.json"
++
++
++def load_spec(task: str) -> dict:
++    path = spec_path(task)
++    if not path.is_file():
++        raise intake.IntakeError("unknown_task", f"No intake spec is packaged for {task}")
++    try:
++        data = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, json.JSONDecodeError) as exc:
++        raise intake.IntakeError("invalid_spec", f"{task}/intake.json: {exc}") from exc
++    return intake.load_spec(data)
++
++
++def read_record(path: Path) -> dict:
++    try:
++        raw = Path(path).read_text(encoding="utf-8")
++    except OSError as exc:
++        raise intake.IntakeError(
++            "unreadable_record", f"cannot read {path}: {exc.strerror or exc}") from exc
++    try:
++        record = json.loads(raw)
++    except json.JSONDecodeError as exc:
++        raise intake.IntakeError("invalid_record", f"{path}: {exc}") from exc
++    if not isinstance(record, dict):
++        raise intake.IntakeError("invalid_record", f"{path}: record must be an object")
++    return record
++
++
++def _payload(record: dict) -> str:

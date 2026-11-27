@@ -1,0 +1,77 @@
++tolerance. Each scored receipt, including an external baseline reference, reports
++its own `unit`. The harness converts `fraction` / `ratio` and `%` / `percent`
++to the approved scale before storing the score. Other units must match exactly.
++Unknown or incompatible units produce `INCONCLUSIVE`. A baseline tolerance in
++`%` specifies percentage points. By default the baseline service collects the
++reference after its performance.
+ An optional `reference_path` points inside the retained protocol to a compatible
+ existing baseline quality result. In addition to the quality-result fields,
+ that result declares `revision`, `conditions`, `service_id`, and `run_id`.
+@@ -85,7 +91,7 @@ Harness checks service liveness and binding between stages.
+ Each measurement result contains `scenarios[scenario_id]` with `workload`, actual
+ `requests`, `successes`, the declared metric fields, and `units[objective_id]`.
+ Every repetition covers every required scenario. Warmup results are separate.
+-Quality results contain `dataset`, `scorer`, `samples`, and the declared numeric
++Quality results contain `dataset`, `scorer`, `samples`, `unit`, and the declared numeric
+ score field. An explicit `status: candidate_failure` from precheck/quality is a
+ rejection; crashes, absent evidence and incompatible results are INCONCLUSIVE.
+ 
+@@ -116,8 +122,10 @@ Use `campaign start --help` for shared budget/input arguments. In service mode
+ supply `--evaluation-config <protocol.json>` and omit the AB/BA single-metric,
+ quality-command and sampling flags. Mixing both parameter sets is an error.
+ 
++Prepare the executable brief and confirm the final card using the [campaign hand-off](task-intake.md#campaign-hand-off).
++
+ ```text
+-inferrsi campaign start --evaluation-mode service_reuse --evaluation-config <protocol.json> ...
++inferrsi campaign start --intake <approved-record.json> --evaluation-mode service_reuse --evaluation-config <protocol.json> ...
+ inferrsi campaign baseline --session <campaign>
+ inferrsi campaign diagnose --session <campaign> --bottleneck <description> --evidence <summary.txt>
+ inferrsi campaign knowledge --session <campaign> --query <cue> --context-bytes <bytes>
+@@ -300,6 +308,7 @@ version shown in `recorded_runtime_version`.
+ 
+ ## Records, compatibility and validation
+ 
++The separate intake receipt in `plan/` identifies the approved brief.
+ Plan schema 3/state schema 2 are specific to service reuse. Missing mode means
+ legacy AB/BA; old plans are not converted. Legacy sessions still require their recorded runtime for resume. This mode stores commit records,
+ configuration values, ownership/run IDs and raw evidence without calculating,
+diff --git a/docs/guides/task-input.md b/docs/guides/task-input.md
+index a9846909..24c7e3cf 100644
+--- a/docs/guides/task-input.md
++++ b/docs/guides/task-input.md
+@@ -10,6 +10,9 @@ without side effects. `inferrsi plan --task` and `inferrsi run --task` use a com
+ file with the existing plan and run operations (see
+ [use with plan and run](#use-with-plan-and-run)).
+ 
++Intake confirmation records (`inferrsi task intake ...`) are a separate contract
++used before a task file is complete; see [task intake](task-intake.md).
++
+ | Resource | Location | Print from an installed CLI |
+ | --- | --- | --- |
+ | JSON Schema (draft 2020-12) | `src/inferrsi/apps/cli/task-input/v1/schema.json` in the wheel | `inferrsi task schema` |
+diff --git a/docs/guides/task-intake.md b/docs/guides/task-intake.md
+new file mode 100644
+index 00000000..780c49aa
+--- /dev/null
++++ b/docs/guides/task-intake.md
+@@ -0,0 +1,242 @@
++# Task intake records (intake/v1)
++
++`intake/v1` is the confirmation record an Agent fills before a measured task.
++A native question card, a numbered text fallback and an optional check-in
++interview all write the same record; the record decides which fields still
++block the next stage. It sits next to, not inside, the shared YAML task file
++(`task-input/v1`, [task input](task-input.md)): the record states where each
++value came from, and only fields mapped to `task-input/v1` are expected to
++reach a task file.
++
++The contract is `inferrsi.apps.cli.intake_contract`; the commands are
++`inferrsi task intake ...`. Nothing here starts a process, probes a device or
++freezes a gate. `evaluate` and `answer` update the named record under a sibling `.lock` file.
++If an update is in progress, retry after it finishes.
++
++## Files
++
++| File | Owner |
++| --- | --- |

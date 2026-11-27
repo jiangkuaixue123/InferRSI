@@ -1,0 +1,77 @@
+@@ -168,7 +172,7 @@ assert summary['completed_rounds'] == 1
+     ]
+     result = subprocess.run(
+         [sys.executable, "-X", "utf8", "-c", script],
+-        input=json.dumps({"start": start_arguments(project), "commands": commands,
++        input=json.dumps({"start": approved_start(start_arguments(project)), "commands": commands,
+                           "repo": str(repo), "root": str(root)}),
+         capture_output=True, text=True, encoding="utf-8", timeout=60,
+     )
+@@ -271,7 +275,8 @@ def test_dashboard_rejects_identical_bytes_when_earlier_round_remains_best(
+             "import json, sys\nfrom pathlib import Path\n"
+             "result = Path(sys.argv[2])\n"
+             "rejected = 'round-02' in result.parts and 'quality-candidate' in result.parts\n"
+-            "result.write_text(json.dumps({'correct':not rejected}))\n",
++            "checked = {'correct':not rejected,'dataset':'fixture-exact-v1'}\n"
++            "result.write_text(json.dumps(checked))\n",
+             encoding="utf-8",
+         )
+     start(project, capsys)
+@@ -426,7 +431,7 @@ def test_project_knowledge_off_and_manual_record_writes_are_rejected(project, ca
+ 
+ def test_declared_paths_cannot_escape_project(project, capsys):
+     with pytest.raises(SystemExit):
+-        start(project, capsys, extra=("--include", "../protocol"))
++        main(preparation_arguments(start_arguments(project, extra=("--include", "../protocol"))))
+     assert not project[3].exists()
+ 
+ 
+@@ -524,7 +529,7 @@ def test_bad_candidate_exception_is_classified_by_frozen_wrapper(project, capsys
+         "import json, runpy, sys\nfrom pathlib import Path\n"
+         "try:\n"
+         "    compute = runpy.run_path(str(Path(sys.argv[1])/'engine.py'))['compute']\n"
+-        "    result = {'correct':compute(16)==32}\n"
++        "    result = {'correct':compute(16)==32,'dataset':'fixture-exact-v1'}\n"
+         "except RuntimeError:\n"
+         "    result = {'status':'candidate_failure', 'reason':'compute raised RuntimeError'}\n"
+         "Path(sys.argv[2]).write_text(json.dumps(result))\n", encoding="utf-8")
+@@ -656,7 +661,8 @@ def test_dashboard_shows_failed_independent_final_separately_from_search(
+         "# Synthetic final-only rejection exercises result presentation, not quality policy.\n"
+         "passed = not ('final' in Path(sys.argv[2]).parts and "
+         f"Path(sys.argv[1]).name == {side!r})\n"
+-        "Path(sys.argv[2]).write_text(json.dumps({'correct':passed}))\n", encoding="utf-8")
++        "result = {'correct':passed,'dataset':'fixture-exact-v1'}\n"
++        "Path(sys.argv[2]).write_text(json.dumps(result))\n", encoding="utf-8")
+     start(project, capsys)
+     submit(project, capsys, 20)
+     assert main(["campaign", "final", "--directory", str(project[3]),
+diff --git a/tests/apps/test_project_service_reuse.py b/tests/apps/test_project_service_reuse.py
+index c6bbff56..6ac15728 100644
+--- a/tests/apps/test_project_service_reuse.py
++++ b/tests/apps/test_project_service_reuse.py
+@@ -14,10 +14,11 @@ import pytest
+ from inferrsi.apps.cli import main
+ from inferrsi.apps.cli.arguments import parser
+ from inferrsi.apps.delivery import project, read_bundle
+-from inferrsi.harness import executor, manager
++from inferrsi.harness import evaluator, executor, manager
+ from inferrsi.harness.executor.serving import _attempt
+ from inferrsi.harness.manager import _state as optimization
+ from inferrsi.harness.records import service_io
++from tests.fixtures.campaign_intake import preparation_arguments
+ from tests.fixtures.service_reuse import begin, call, commit, diagnose, rejected, settings, submit
+ from tests.fixtures.service_reuse import campaign as campaign
+ from tests.fixtures.service_reuse import no_fingerprints as no_fingerprints
+@@ -95,8 +96,16 @@ def test_manager_baseline_and_cli_status_share_one_service_attempt(campaign, mon
+ 
+ 
+ def test_one_service_order_and_independent_final_ignores_workspace(campaign):
++    config = settings()
++    config["quality"].update(direction="minimize", unit="%", threshold=1)
++    campaign["config"].write_text(json.dumps(config))
++    commit(campaign["repo"], quality=0.005, score_unit="fraction")
+     begin(campaign)
+-    result = submit(campaign, version="accepted", a=95, b=102)
++    failed = submit(campaign, version="wrong-quality", a=90, quality=0.02, score_unit="fraction")
++    assert failed["latest_observation"]["assessment"]["verdict"] == "FAIL"
++    assert failed["best"]["kind"] == "baseline"

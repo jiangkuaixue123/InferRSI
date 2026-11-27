@@ -1,0 +1,91 @@
+     view = evaluate(record, spec, frozen=frozen)
+     confirmed, proposed, unknown = {}, {}, []
+     for field in spec["fields"]:
+diff --git a/src/inferrsi/apps/cli/task_intake.py b/src/inferrsi/apps/cli/task_intake.py
+index 1ee0ba44..4d9c565b 100644
+--- a/src/inferrsi/apps/cli/task_intake.py
++++ b/src/inferrsi/apps/cli/task_intake.py
+@@ -1,10 +1,4 @@
+-"""intake/v1 CLI: evaluate, answer and summarize confirmation records.
+-
+-The contract lives in ``inferrsi.apps.cli.intake_contract``. This module loads the
+-versioned per-task spec and the record file, applies the pure contract
+-functions and writes the record back. It starts nothing and measures nothing;
+-``execution`` stays ``not started`` until an existing operation is authorized.
+-"""
++"""intake/v1 CLI: load spec and record, apply ``intake_contract``, write the record back."""
+ 
+ from __future__ import annotations
+ 
+@@ -196,8 +190,8 @@ def answer_command(args) -> dict:
+     spec = load_spec(record["task"])
+     record = intake.answer(record, spec, question_id=args.question,
+                            value=args.value, unknown=bool(args.unknown))
+-    return _evaluate_and_save(record_path, record, spec, args.frozen,
+-                              selecting_reference=args.question == f"q:{intake.REFERENCE}")
++    selected = record["fields"].get(intake.REFERENCE, {}).get("source") == f"answer:{args.question}"
++    return _evaluate_and_save(record_path, record, spec, args.frozen, selecting_reference=selected)
+ 
+ 
+ def summary_command(args) -> dict:
+@@ -209,10 +203,8 @@ def summary_command(args) -> dict:
+ 
+ def campaign_gate(path: Path, *, expected_task: str = "task-performance",
+                   frozen: dict | None = None) -> tuple[dict, dict]:
+-    """Evaluate a record for ``campaign start``; return the gate and the record it read.
+-
+-    Never starts or measures anything. The caller retains the returned record, so the
+-    bytes kept next to the campaign are the ones this gate evaluated.
++    """Return the gate and the record it read; retain that record, so the bytes kept
++    next to the campaign are the ones this gate evaluated.
+     """
+     record = read_record(Path(path))
+     if record.get("task") != expected_task:
+diff --git a/src/inferrsi/harness/project.py b/src/inferrsi/harness/project.py
+index 8ef70563..1c1c16e8 100644
+--- a/src/inferrsi/harness/project.py
++++ b/src/inferrsi/harness/project.py
+@@ -7,6 +7,7 @@ does not infer acceptance from natural language or launch any commands.
+ import json
+ import math
+ import shutil
++from decimal import Decimal
+ from pathlib import Path
+ from statistics import median
+ 
+@@ -115,6 +116,28 @@ def meets_target(target, *, baseline, candidate, direction):
+     return (change if direction == "maximize" else -change) >= target["target_value"]
+ 
+ 
++UNSPECIFIED_QUALITY_UNITS = ("", "unknown", "unspecified", "n/a")
++
++
++def quality_unit_declared(unit) -> bool:
++    return isinstance(unit, str) and unit.strip().lower() not in UNSPECIFIED_QUALITY_UNITS
++
++
++def quality_score_in_unit(score, reported_unit, approved_unit):
++    """Return the score in the frozen unit; only proportional scales can cross units."""
++    if not (quality_unit_declared(reported_unit) and quality_unit_declared(approved_unit)):
++        raise ValueError("quality_unit_mismatch")
++    if reported_unit == approved_unit:
++        return score
++    scales = {"%": 2, "percent": 2, "fraction": 0, "ratio": 0}
++    if reported_unit not in scales or approved_unit not in scales:
++        raise ValueError("quality_unit_mismatch")
++    converted = float(Decimal(str(score)).scaleb(scales[approved_unit] - scales[reported_unit]))
++    if not math.isfinite(converted):
++        raise ValueError("quality_unit_mismatch")
++    return converted
++
++
+ def inspect_step(directory: Path, settings: dict, definition: dict, execution: dict) -> dict:
+     """Interpret one frozen script's explicit result, never guess a crash's cause."""
+     failure = {"status": "infrastructure_failure", "reason": "failed_execution"}
+@@ -140,11 +163,18 @@ def inspect_step(directory: Path, settings: dict, definition: dict, execution: d
+     bound = settings.get("quality_bound")
+     if definition["phase"] == "quality" and bound and quality is True:
+         score = _value(document, bound["metric"])
+-        if type(score) is bool and bound["metric"] == settings["quality_key"]:
++        unit = document.get("unit")
++        if (type(score) is bool and bound["metric"] == settings["quality_key"]

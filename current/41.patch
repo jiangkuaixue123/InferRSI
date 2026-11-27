@@ -1,0 +1,82 @@
++    with pytest.raises(intake.IntakeError) as error:
++        intake.answer(changed, spec, question_id=question["id"], value=5)
++    assert error.value.code == "stale_answer"
++
++
++def test_duplicate_answer_is_rejected_once():
++    spec = spec_for()
++    record, view = ask(intake.new_record("task-performance", record_id="intake-dup"), spec)
++    question = next(item for item in view["questions"]
++                    if item["field"] == "acceptance.metric_key")
++    record = intake.answer(record, spec, question_id=question["id"], value="p95_ttft")
++    with pytest.raises(intake.IntakeError) as error:
++        intake.answer(record, spec, question_id=question["id"], value="p95_ttft")
++    assert error.value.code == "already_answered"
++
++
++def test_acceptance_answer_from_a_card_stays_a_proposal():
++    spec = spec_for()
++    record, view = ask(intake.new_record("task-performance", record_id="intake-card"), spec)
++    question = next(item for item in view["questions"]
++                    if item["field"] == "acceptance.metric_key")
++    record = intake.answer(record, spec, question_id=question["id"], value="p95_ttft")
++    assert record["fields"]["acceptance.metric_key"]["status"] == "proposed"
++    view = intake.evaluate(record, spec)
++    search = next(item for item in view["blockers"] if item["stage"] == "candidate_search")
++    assert "acceptance.metric_key" in {item["field"] for item in search["blocked_by"]}
++    assert "candidate_search" not in view["allowed_next"]
++    summary = intake.summary(record, spec)
++    assert summary["proposed"]["acceptance.metric_key"] == "p95_ttft"
++
++
++def test_acceptance_issue_confirms_a_previously_proposed_value():
++    spec = spec_for()
++    record = intake.new_record("task-performance", record_id="intake-upgrade")
++    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p95_ttft"},
++                               source="prompt")
++    assert record["fields"]["acceptance.metric_key"]["status"] == "proposed"
++    record = intake.set_fields(record, spec, {intake.REFERENCE: "accepted issue"}, source="prompt")
++    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p95_ttft",
++                                            intake.REFERENCE: "accepted issue"}, source="issue")
++    assert record["fields"]["acceptance.metric_key"]["status"] == "confirmed"
++
++
++def test_two_stated_values_become_a_question_with_both_options():
++    spec = spec_for()
++    record = intake.new_record("task-performance", record_id="intake-conflict")
++    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p95_ttft"},
++                               source="prompt")
++    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p99_ttft"},
++                               source="prompt")
++    assert record["fields"]["acceptance.metric_key"]["status"] == "conflicting"
++    record, view = ask(record, spec)
++    question = view["questions"][0]
++    assert question["field"] == "acceptance.metric_key"
++    values = {option["value"] for option in question["options"]}
++    assert values == {"p95_ttft", "p99_ttft"}
++
++
++@pytest.mark.parametrize("selected", ["p95_ttft", "p99_ttft"])
++def test_metric_conflict_card_then_matching_issue_confirmation(tmp_path, capsys, selected):
++    path = tmp_path / "intake.json"
++    record = ["--record", str(path), "--json"]
++    metric = "acceptance.metric_key"
++    reference = "selected acceptance issue"
++
++    def call(*args):
++        assert cli.main(["task", "intake", *args, *record]) == 0
++        return json.loads(capsys.readouterr().out)
++
++    call("evaluate", "--task", "task-performance", "--set", f"{intake.REFERENCE}={reference}",
++         "--set", f"{metric}=p95_ttft")
++    view = call("evaluate", "--set", f"{metric}=p99_ttft")
++    card = view["questions"][0]
++    assert card["field"] == metric
++    assert {opt["value"] for opt in card["options"]} == {"p95_ttft", "p99_ttft"}
++    assert call("evaluate", "--set", f"{metric}={selected}")["revision"] == view["revision"]
++    chosen = call("answer", "--question", card["id"], "--value", selected)
++    assert chosen["fields"][metric] == {"value": selected, "source": "answer:" + card["id"],
++                                        "status": "proposed"}
++    assert not any(q["field"] == metric for q in chosen["questions"])
++    issue = call("evaluate", "--source", "issue", "--set", f"{metric}={selected}",
++                 "--set", f"{intake.REFERENCE}={reference}")

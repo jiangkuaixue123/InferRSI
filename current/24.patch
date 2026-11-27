@@ -1,0 +1,96 @@
++    if getattr(args, "json", False):
++        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
++    else:
++        print(render_summary(result) if args.intake_action == "summary" else render(result))
++    return 0
+diff --git a/src/inferrsi/harness/evaluator/__init__.py b/src/inferrsi/harness/evaluator/__init__.py
+index 2eee432c..76df2262 100644
+--- a/src/inferrsi/harness/evaluator/__init__.py
++++ b/src/inferrsi/harness/evaluator/__init__.py
+@@ -17,6 +17,7 @@ from ._measurement import (
+     validate_mechanism,
+ )
+ from ._project import assess_project, inspect_project_step, project_steps
++from ._quality import quality_unit_declared
+ from ._service import (
+     ServiceStageDecision,
+     aggregate_service_measurements,
+@@ -62,6 +63,7 @@ __all__ = [
+     "prefer_service_measurements",
+     "profile_evidence",
+     "project_steps",
++    "quality_unit_declared",
+     "relative_mad",
+     "service_assessment",
+     "service_choice",
+@@ -83,7 +85,9 @@ __all__ = [
+ def assess_ordinary(root, directory, plan, execution, mechanism=None, *, assess_packaged):
+     """Read project evidence or delegate to the packaged task's supplied assessor."""
+     if plan["task_source"] == "project":
++        target = plan.get("performance_target") if directory.parent == root / "final" else None
+         return assess_project(
+-            directory, plan["evaluation_settings"], execution, mechanism=mechanism,
++            directory, plan["evaluation_settings"], execution,
++            mechanism=mechanism, final_target=target,
+         )
+     return assess_packaged(root, directory, plan, execution)
+diff --git a/src/inferrsi/harness/evaluator/_project.py b/src/inferrsi/harness/evaluator/_project.py
+index ca0c2630..2510c5e9 100644
+--- a/src/inferrsi/harness/evaluator/_project.py
++++ b/src/inferrsi/harness/evaluator/_project.py
+@@ -8,6 +8,7 @@ from statistics import median
+ from inferrsi.harness.records.artifact_primitives import sha256
+ 
+ from ._measurement import explain, paired_statistics, profile_evidence, validate_mechanism
++from ._quality import quality_score_in_unit
+ 
+ 
+ def project_steps(settings: dict) -> list[dict]:
+@@ -33,6 +34,20 @@ def _value(document, key):
+     return value
+ 
+ 
++def meets_target(target, *, baseline, candidate, direction):
++    if candidate is None:
++        return None
++    if target["target_kind"] == "absolute":
++        limit = target["target_value"]
++        return candidate <= limit if direction == "minimize" else candidate >= limit
++    if baseline in (None, 0):
++        return None
++    change = (candidate - baseline) / abs(baseline) * 100
++    if not math.isfinite(change):
++        return None
++    return (change if direction == "maximize" else -change) >= target["target_value"]
++
++
+ def inspect_project_step(
+     directory: Path, settings: dict, definition: dict, execution: dict,
+ ) -> dict:
+@@ -52,7 +67,29 @@ def inspect_project_step(
+         return {**failure, "reason": "missing_or_invalid_result"}
+     evidence = {relative: sha256(path)}
+     rejected = document.get("status") == "candidate_failure"
++    benchmark = settings.get("quality_benchmark")
++    if (definition["phase"] == "quality" and benchmark is not None and not rejected
++            and document.get("dataset") != benchmark):
++        return {**failure, "reason": "quality_benchmark_mismatch", "evidence_files": evidence}
+     quality = _value(document, settings["quality_key"])
++    bound = settings.get("quality_bound")
++    if definition["phase"] == "quality" and bound and quality is True:
++        score = _value(document, bound["metric"])
++        unit = document.get("unit")
++        if (type(score) is bool and bound["metric"] == settings["quality_key"]
++                and bound.get("unit") == "boolean"):
++            unit = document.get("unit", "boolean")
++            score = int(score)
++        if type(score) not in (float, int) or not math.isfinite(score):
++            return {**failure, "reason": "missing_numeric_quality_evidence",
++                    "evidence_files": evidence}
++        try:
++            score = quality_score_in_unit(score, unit, bound.get("unit"))
++        except ValueError as exc:
++            return {**failure, "reason": str(exc), "evidence_files": evidence}
++        limit = bound["limit"]
++        quality = {"at_least": score >= limit, "at_most": score <= limit, "equal": score == limit}[
++            bound["comparator"]]

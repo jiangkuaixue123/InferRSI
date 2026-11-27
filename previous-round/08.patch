@@ -1,0 +1,85 @@
+     log = events(campaign, attempt)
+@@ -357,17 +365,22 @@ def test_incomplete_baseline_prevents_candidate_search(campaign):
+ def test_baseline_comparison_quality_and_pause_resume(campaign):
+     config = settings()
+     config["quality"].pop("threshold")
+-    config["quality"].update(mode="baseline_comparison", tolerance=0)
++    config["quality"].update(mode="baseline_comparison", direction="minimize", unit="%",
++                             tolerance=0.5)
+     config["stagnation"] = {"rounds": 1, "action": "pause"}
+     campaign["config"].write_text(json.dumps(config))
++    commit(campaign["repo"], quality=0.5, score_unit="%")
+     begin(campaign)
+-    result = submit(campaign, version="worse-quality", a=90, quality=0)
++    result = submit(campaign, version="worse-quality", a=90, quality=0.02, score_unit="fraction")
+     assert result["state"] == "paused"
+     assert result["latest_observation"]["assessment"]["quality_passed"] is False
+     resumed = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     repeated = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     assert resumed["stagnation"] == repeated["stagnation"]
+     assert resumed["state"] == "active"
++    accepted = submit(campaign, version="improved", a=90, quality=0.005, score_unit="fraction")
++    assert accepted["latest_observation"]["assessment"]["verdict"] == "PASS"
++    assert accepted["latest_observation"]["execution"]["quality_score"] == 0.5
+ 
+ 
+ def test_accepted_but_unselected_candidate_keeps_its_verdict(campaign):
+@@ -619,6 +632,15 @@ def test_invalid_protocol_containers_rejected_before_campaign_writes(campaign, b
+     assert not campaign["root"].exists()
+ 
+ 
++@pytest.mark.parametrize("unit", ["unknown", " N/A ", "unspecified"])
++def test_placeholder_quality_unit_rejected_before_campaign_writes(campaign, unit):
++    config = settings()
++    config["quality"]["unit"] = unit
++    campaign["config"].write_text(json.dumps(config))
++    assert rejected(campaign["start"]) == 2
++    assert not campaign["root"].exists()
++
++
+ def test_live_dashboard_state_has_no_content_fingerprint(campaign):
+     import threading
+     from urllib.request import urlopen
+@@ -659,6 +681,7 @@ def test_existing_quality_reference_is_reused_only_when_compatible(campaign, com
+         "run_id": "previous-run",
+         "dataset": "synthetic",
+         "scorer": "exact-v1" if compatible else "incompatible-scorer",
++        "unit": "points",
+         "samples": 2,
+         "quality": 1,
+     }
+@@ -687,7 +710,7 @@ def test_reference_refresh_uses_baseline_cache_without_testing_parent_quality(
+     reference = {
+         "status": "completed", "revision": revision, "conditions": config["conditions"],
+         "service_id": "previous-service", "run_id": "previous-run",
+-        "dataset": "synthetic", "scorer": "exact-v1", "samples": 2, "quality": 1,
++        "dataset": "synthetic", "scorer": "exact-v1", "unit": "points", "samples": 2, "quality": 1,
+     }
+     protocol = Path(campaign["start"][campaign["start"].index("--protocol") + 1])
+     (protocol / "reference.json").write_text(json.dumps(reference))
+@@ -1674,3 +1697,55 @@ def test_service_planning_brief_marks_quality_inputs_provisional(campaign):
+     assert prepared["task_brief"]["id"] != brief["id"]
+     assert "quality >= baseline quality - 0.1 points" in prepared["task_brief"]["quality_gate"]
+     assert not campaign["root"].exists()
++
++
++@pytest.mark.parametrize(("mode", "baseline", "limit", "score", "unit", "verdict"), [
++    ("absolute", 0.5, 1, 0.02, "fraction", "FAIL"),
++    ("absolute", 0.5, 1, 0.005, "fraction", "PASS"),
++    ("absolute", 0.5, 1, 0.005, None, "INCONCLUSIVE"),
++    ("absolute", 0.5, 1, 0.005, "tokens", "INCONCLUSIVE"),
++    ("baseline_comparison", 2, 1, 0.03, "fraction", "PASS"),
++    ("baseline_comparison", 2, 1, 0.0301, "fraction", "FAIL"),
++])
++def test_service_scores_in_the_approved_quality_unit(campaign, mode, baseline, limit,
++                                                     score, unit, verdict):
++    from inferrsi.apps.cli import task_intake
++    from tests.fixtures.campaign_intake import approved_start
++
++    config = settings()
++    quality = config["quality"]
++    quality.pop("threshold")
++    quality.update(mode=mode, direction="minimize", unit="%")
++    quality["tolerance" if mode == "baseline_comparison" else "threshold"] = limit
++    campaign["config"].write_text(json.dumps(config))
++    args = approved_start(campaign["start"])

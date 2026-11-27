@@ -1,0 +1,100 @@
++        "revision": record["revision"],
++        "sha256": digest,
++        "brief_id": gate["task_brief"]["id"],
++        "gate": gate["status"],
++    }}
++
++
++def _render_brief(view: dict) -> list[str]:
++    brief = view["task_brief"]
++    if not brief:
++        return []
++    return [f"Task brief (revision {brief['revision']}, {view['brief_review']})",
++            f"Performance target: {brief['performance_target']}",
++            f"Accuracy on {brief['benchmark']}: {brief['quality_gate']}",
++            *(f"  {key}: {value}" for key, value in brief["conditions"].items()),
++            *([json.dumps(brief["campaign_launch"], ensure_ascii=False, indent=2)]
++              if "campaign_launch" in brief else [])]
++
++
++def _render_questions(view: dict) -> list[str]:
++    lines = []
++    if view["questions"]:
++        lines.append("Ask the user the following questions using the host question-card tool. "
++                     "Wait for their reply before measurement or candidate work. "
++                     "Use numbered text when the tool is unavailable.")
++        lines.append("questions:")
++        for question in view["questions"]:
++            lines.append(f"  {question['id']}  {question['question']}")
++            for option in question["options"]:
++                hint = f"  ({option['hint']})" if option.get("hint") else ""
++                lines.append(f"      - {option['value']}{hint}")
++            lines.append("      - unknown  (record as unknown; dependent stages stay blocked)")
++    return lines
++
++
++def render(view: dict) -> str:
++    lines = [f"task: {view['task']}  revision: {view['revision']}  "
++             f"complete: {'true' if view['complete'] else 'false'}"]
++    lines.extend(_render_brief(view))
++    lines.extend(_render_questions(view))
++    if view["conflicts"]:
++        lines.append("conflicts:")
++        for item in view["conflicts"]:
++            lines.append(f"  {item['field']}: record {item.get('record_value')!r} vs "
++                         f"frozen {item.get('frozen_value')!r}")
++    if view["blockers"]:
++        lines.append("blocked stages:")
++        for blocker in view["blockers"]:
++            fields = ", ".join(
++                f"{item['field']} ({item['status']})" for item in blocker["blocked_by"])
++            lines.append(f"  {blocker['stage']}: {fields}")
++    lines.append("allowed next: " + ", ".join(view["allowed_next"]))
++    return "\n".join(lines)
++
++
++def render_summary(view: dict) -> str:
++    lines = [f"task: {view['task']}  revision: {view['revision']}  "
++             f"complete: {'true' if view['complete'] else 'false'}"]
++    lines.extend(_render_brief(view))
++    for label, values in (("confirmed", view["confirmed"]), ("proposed", view["proposed"])):
++        if values:
++            lines.append(f"{label}:")
++            for path, value in values.items():
++                lines.append(f"  {path} = {json.dumps(value, ensure_ascii=False)}")
++    if view["unknown"]:
++        lines.append("unknown:")
++        lines.extend(f"  {path}" for path in view["unknown"])
++    if view["conflicts"]:
++        lines.append("conflicts:")
++        for item in view["conflicts"]:
++            lines.append(f"  {item['field']}: record {item.get('record_value')!r} vs "
++                         f"frozen {item.get('frozen_value')!r}")
++    if view["blockers"]:
++        lines.append("blocked stages:")
++        for blocker in view["blockers"]:
++            lines.append(f"  {blocker['stage']}")
++    lines.append("allowed next: " + ", ".join(view["allowed_next"]))
++    return "\n".join(lines)
++
++
++def command(args) -> int:
++    try:
++        if args.intake_action == "summary":
++            result = summary_command(args)
++        else:
++            path = args.record
++            path.parent.mkdir(parents=True, exist_ok=True)
++            with file_lock(path.with_name(path.name + ".lock")):
++                if args.intake_action == "evaluate":
++                    result = evaluate_command(args)
++                else:
++                    result = answer_command(args)
++    except BlockingIOError:
++        print(json.dumps({"error": "record_busy", "message": "Retry after the current update",
++                          "execution": "not started"}))
++        return 2
++    except intake.IntakeError as exc:
++        print(json.dumps({"error": exc.code, "message": str(exc), "execution": "not started"},
++                         ensure_ascii=False, indent=2))
++        return 2
