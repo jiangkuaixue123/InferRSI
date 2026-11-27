@@ -1,0 +1,95 @@
++    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
++    capsys.readouterr()
++    _, result = submit(project, capsys, 20)
++    assert result["latest_observation"]["assessment"]["verdict"] == "PASS"
++
++
++def test_reissued_field_rejects_delayed_reply_and_keeps_unaffected_sibling(tmp_path, capsys):
++    path = tmp_path / "intake.json"
++    base = ["task", "intake"]
++    record = ["--record", str(path), "--json"]
++    metric = "acceptance.metric_key"
++    gain = "acceptance.min_improvement_pct"
++    sibling = "protocol.timing_boundary"
++    assert cli.main([*base, "evaluate", *record, "--task", "task-performance",
++                     "--set", "acceptance.reference=fixture", "--set", f"{metric}=p95"]) == 0
++    capsys.readouterr()
++    original = task_intake.read_record(path)
++    assert cli.main([*base, "evaluate", *record, "--source", "issue",
++                     "--set", "acceptance.reference=fixture", "--set", f"{metric}=p99"]) == 0
++    capsys.readouterr()
++    current = task_intake.read_record(path)
++    assert card_id(original, gain) != card_id(current, gain)
++    assert card_id(original, sibling) == card_id(current, sibling)
++    before = path.read_bytes()
++    for stale in (card_id(original, gain), f"q:{gain}"):
++        assert cli.main([*base, "answer", *record, "--question", stale, "--value", "5"]) == 2
++        assert json.loads(capsys.readouterr().out)["error"] == "stale_answer"
++        assert path.read_bytes() == before
++    assert cli.main([*base, "answer", *record, "--question", card_id(original, sibling),
++                     "--value", "end-to-end"]) == 0
++    capsys.readouterr()
++    assert cli.main([*base, "answer", *record, "--question", card_id(current, gain),
++                     "--value", "5"]) == 0
++    assert json.loads(capsys.readouterr().out)["fields"][gain]["value"] == 5
++
++
++def test_issued_field_token_binds_record_and_conflict_options():
++    spec = spec_for()
++    key = "optimization.objective"
++    record = intake.new_record("task-performance", record_id="first")
++    for value in ("throughput", "latency"):
++        record = intake.set_fields(record, spec, {key: value}, source="prompt")
++    record, _ = ask(record, spec)
++    original = card_id(record, key)
++    for updated in ({**record, "record_id": "second"},
++                    intake.set_fields(record, spec, {key: "memory"}, source="prompt")):
++        updated, _ = ask(updated, spec)
++        assert card_id(updated, key) != original
++        with pytest.raises(intake.IntakeError) as rejected:
++            intake.answer(updated, spec, question_id=original, value="latency")
++        assert rejected.value.code == "stale_answer"
++        chosen = intake.answer(updated, spec, question_id=card_id(updated, key), value="latency")
++        assert chosen["fields"][key]["status"] == "confirmed"
++
++
++def test_legacy_open_token_must_be_reissued_but_settled_answers_keep_provenance():
++    spec = spec_for()
++    key = "optimization.objective"
++    record, _ = ask(build({intake.REFERENCE}), spec)
++    reference = record["fields"][intake.REFERENCE]
++    reference["source"] = f"answer:q:{intake.REFERENCE}"
++    for card in record["open_questions"]:
++        card["id"] = "q:" + card["field"]
++        card.pop("issued_revision")
++    with pytest.raises(intake.IntakeError) as rejected:
++        intake.answer(record, spec, question_id="q:" + key, value="latency")
++    assert rejected.value.code == "stale_answer"
++    assert intake.selected_reference(record) == reference["value"]
++    record, _ = ask(record, spec)
++    reply = intake.answer(record, spec, question_id=card_id(record, key), value="latency")
++    assert reply["fields"][key]["status"] == "confirmed"
+diff --git a/tests/fixtures/campaign_intake.py b/tests/fixtures/campaign_intake.py
+new file mode 100644
+index 00000000..1f9da1bf
+--- /dev/null
++++ b/tests/fixtures/campaign_intake.py
+@@ -0,0 +1,130 @@
++"""Synthetic user approval for integration tests that exercise measured campaigns."""
++
++import io
++import json
++import shlex
++from contextlib import redirect_stdout
++from pathlib import Path
++
++from inferrsi.apps.cli import intake_contract as intake
++from inferrsi.apps.cli import main, task_intake
++from inferrsi.apps.cli.arguments import parser
++from inferrsi.harness import executor
++from inferrsi.harness.executor import candidates
++from inferrsi.harness.records import service_io
++
++
++def approved_start(arguments, *, overrides=None):
++    args = parser().parse_args(arguments)

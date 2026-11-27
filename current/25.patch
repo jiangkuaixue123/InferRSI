@@ -1,0 +1,92 @@
+     if rejected or (definition["phase"] == "quality" and quality is False):
+         return {"status": ("candidate_failure" if definition["side"] == "candidate"
+                            else "infrastructure_failure"),
+@@ -73,7 +110,7 @@ def inspect_project_step(
+ 
+ 
+ def assess_project(directory: Path, settings: dict, execution: dict, *,
+-                   mechanism: dict | None = None) -> dict:
++                   mechanism: dict | None = None, final_target: dict | None = None) -> dict:
+     """Judge one attempt; ``mechanism`` is the declaration bound before execution."""
+     evidence = {}
+ 
+@@ -165,6 +202,13 @@ def assess_project(directory: Path, settings: dict, execution: dict, *,
+             verdict, reason = "FAIL", "explanation_" + explanation["status"]
+         elif explanation["status"] != "explained":
+             verdict, reason = "INCONCLUSIVE", "explanation_" + explanation["status"]
++    if final_target and verdict == "PASS":
++        passed = meets_target(final_target, baseline=before, candidate=after,
++                              direction=settings["direction"])
++        if passed is None:
++            verdict, reason = "INCONCLUSIVE", "final_target_evidence_unavailable"
++        elif not passed:
++            verdict, reason = "FAIL", "final_performance_target_not_met"
+     accepted = verdict == "PASS"
+     point = {"improvement_pct": improvement, "speedup": speedup}
+     score, baseline_score, basis = after, before, "candidate_median"
+@@ -195,6 +239,7 @@ def assess_project(directory: Path, settings: dict, execution: dict, *,
+         paired_statistics=paired, decision=decision,
+         require_explanation=settings.get("require_explanation", False),
+         profile_evidence=observed, explanation=explanation,
+-        quality_contract="Only the supplied frozen quality script and its boolean result",
++        quality_contract=settings.get(
++            "quality_bound", "Only the supplied frozen quality script and its boolean result"),
+         environment_qualification="Caller-managed; no automatic hardware isolation claim",
+     )
+diff --git a/src/inferrsi/harness/evaluator/_quality.py b/src/inferrsi/harness/evaluator/_quality.py
+new file mode 100644
+index 00000000..4c4d0a54
+--- /dev/null
++++ b/src/inferrsi/harness/evaluator/_quality.py
+@@ -0,0 +1,25 @@
++"""Interpret scorer output in the unit declared by the frozen quality gate."""
++
++import math
++from decimal import Decimal
++
++UNSPECIFIED_QUALITY_UNITS = ("", "unknown", "unspecified", "n/a")
++
++
++def quality_unit_declared(unit) -> bool:
++    return isinstance(unit, str) and unit.strip().lower() not in UNSPECIFIED_QUALITY_UNITS
++
++
++def quality_score_in_unit(score, reported_unit, approved_unit):
++    """Return the score in the frozen unit; only proportional scales can cross units."""
++    if not (quality_unit_declared(reported_unit) and quality_unit_declared(approved_unit)):
++        raise ValueError("quality_unit_mismatch")
++    if reported_unit == approved_unit:
++        return score
++    scales = {"%": 2, "percent": 2, "fraction": 0, "ratio": 0}
++    if reported_unit not in scales or approved_unit not in scales:
++        raise ValueError("quality_unit_mismatch")
++    converted = float(Decimal(str(score)).scaleb(scales[approved_unit] - scales[reported_unit]))
++    if not math.isfinite(converted):
++        raise ValueError("quality_unit_mismatch")
++    return converted
+diff --git a/src/inferrsi/harness/evaluator/_service.py b/src/inferrsi/harness/evaluator/_service.py
+index 040fab1d..b950eb4b 100644
+--- a/src/inferrsi/harness/evaluator/_service.py
++++ b/src/inferrsi/harness/evaluator/_service.py
+@@ -1,9 +1,12 @@
+ """Decide service stages from frozen rules and already collected receipts."""
+ 
+ from dataclasses import dataclass
++from decimal import Decimal
+ from statistics import mean, median
+ 
+ from ..records import service_io
++from ._project import meets_target
++from ._quality import quality_score_in_unit
+ 
+ 
+ def _metric_value(document, key):
+@@ -62,9 +65,11 @@ def service_metric_change(obj, candidate, reference):
+     return delta
+ 
+ 
+-def assess_service_performance(settings, measured, parent, initial, *, screening=False):
++def assess_service_performance(settings, measured, parent, initial, *, screening=False,
++                               target=None, target_failure="performance_gate_not_met"):
+     metrics, limits, gain, actual_gain = {}, True, False, False
+-    for obj in settings["objectives"]:

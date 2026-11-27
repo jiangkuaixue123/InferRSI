@@ -1,0 +1,82 @@
++    assert brief["quality_gate_status"] == "provisional"
++    assert "Provisional service quality inputs: quality, 0.1 points" in task_intake.render(planning)
++    assert "quality >= 0.1" not in brief["quality_gate"]
++    assert main([*args, "--prepare-intake"]) == 0
++    prepared = json.loads(campaign["capsys"].readouterr().out)
++    assert prepared["brief_review"] == "awaiting_confirmation"
++    assert prepared["task_brief"]["id"] != brief["id"]
++    assert "quality >= baseline quality - 0.1 points" in prepared["task_brief"]["quality_gate"]
++    assert not campaign["root"].exists()
++
++
++@pytest.mark.parametrize(("mode", "baseline", "limit", "score", "unit", "verdict"), [
++    ("absolute", 0.5, 1, 0.02, "fraction", "FAIL"),
++    ("absolute", 0.5, 1, 0.005, "fraction", "PASS"),
++    ("absolute", 0.5, 1, 0.005, None, "INCONCLUSIVE"),
++    ("absolute", 0.5, 1, 0.005, "tokens", "INCONCLUSIVE"),
++    ("baseline_comparison", 2, 1, 0.03, "fraction", "PASS"),
++    ("baseline_comparison", 2, 1, 0.0301, "fraction", "FAIL"),
++])
++def test_service_scores_in_the_approved_quality_unit(campaign, mode, baseline, limit,
++                                                     score, unit, verdict):
++    from inferrsi.apps.cli import task_intake
++    from tests.fixtures.campaign_intake import approved_start
++
++    config = settings()
++    quality = config["quality"]
++    quality.pop("threshold")
++    quality.update(mode=mode, direction="minimize", unit="%")
++    quality["tolerance" if mode == "baseline_comparison" else "threshold"] = limit
++    campaign["config"].write_text(json.dumps(config))
++    args = approved_start(campaign["start"])
++    gate, _ = task_intake.campaign_gate(Path(args[-1]))
++    assert gate["task_brief"]["campaign_launch"]["evaluation_settings"]["quality"]["unit"] == "%"
++    if mode == "baseline_comparison":
++        assert "1 percentage point " in gate["task_brief"]["quality_gate"]
++    changed = copy.deepcopy(config)
++    changed["quality"]["unit"] = "fraction"
++    campaign["config"].write_text(json.dumps(changed))
++    assert main(args) == 2
++    blocked = json.loads(campaign["capsys"].readouterr().out)
++    assert blocked["reason"] == "launch_conflict"
++    assert blocked["conflicts"] == [
++        {"field": "protocol.quality_unit", "approved": "%", "actual": "fraction"}]
++    campaign["config"].write_text(json.dumps(config))
++    assert main(args) == 0
++    campaign["capsys"].readouterr()
++    frozen = service_io.read(campaign["root"] / "plan.json")["evaluation_settings"]
++    receipt = {"dataset": "synthetic", "scorer": "exact-v1", "samples": 2,
++               "quality": baseline, "unit": "%"}
++    reference = evaluator.service_quality_score(frozen, receipt)
++    receipt["quality"] = score
++    if unit is None:
++        del receipt["unit"]
++    else:
++        receipt["unit"] = unit
++    if verdict == "INCONCLUSIVE":
++        with pytest.raises(ValueError, match="quality_unit_mismatch"):
++            evaluator.service_quality_score(frozen, receipt)
++    else:
++        normalized = evaluator.service_quality_score(frozen, receipt)
++        passed = evaluator.service_quality_passed(frozen, normalized, reference)
++        assert passed is (verdict == "PASS")
+diff --git a/tests/apps/test_session_ranking_policy.py b/tests/apps/test_session_ranking_policy.py
+index 1391378e..4c39fa5b 100644
+--- a/tests/apps/test_session_ranking_policy.py
++++ b/tests/apps/test_session_ranking_policy.py
+@@ -398,7 +398,8 @@ def test_project_assessor_uses_the_same_measurements_quality_and_threshold(proje
+         assert assessment["verdict"] == "PASS" and assessment["quality_passed"]
+         directory = arm[-1] / read(arm[-1] / "state.json")["rounds"][0]["path"]
+         samples = {p.parent.name: read(p) for p in (directory / "execution").glob("*/result.json")}
+-        assert {"metric": 20} in samples.values() and {"correct": True} in samples.values()
++        assert {"metric": 20} in samples.values()
++        assert {"correct": True, "dataset": "fixture-exact-v1"} in samples.values()
+         evidence.append((read(arm[-1] / "plan.json")["evaluation_settings"], samples,
+                          assessment["verdict"], assessment["score"], assessment["quality_passed"]))
+     assert evidence[0] == evidence[1]
+diff --git a/tests/apps/test_task_intake.py b/tests/apps/test_task_intake.py
+new file mode 100644
+index 00000000..06eb8fa4
+--- /dev/null
++++ b/tests/apps/test_task_intake.py
+@@ -0,0 +1,1028 @@

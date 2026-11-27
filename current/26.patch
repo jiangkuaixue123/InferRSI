@@ -1,0 +1,84 @@
++    objectives = settings["objectives"] if parent is not None else ()
++    for obj in objectives:
+         name = obj["id"]
+         p = service_metric_change(obj, measured["values"][name], parent["values"][name])
+         b = service_metric_change(obj, measured["values"][name], initial["values"][name])
+@@ -90,12 +95,18 @@ def assess_service_performance(settings, measured, parent, initial, *, screening
+         limits &= bounded
+         actual_gain |= improved
+         gain |= metrics[name]["gain_passed"]
+-    passed = limits and (actual_gain if screening else gain)
+-    return {
+-        "passed": passed,
+-        "metrics": metrics,
+-        "reason": "performance_gate_satisfied" if passed else "performance_gate_not_met",
+-    }
++    passed = parent is None or (limits and (actual_gain if screening else gain))
++    reason = "performance_gate_satisfied" if passed else "performance_gate_not_met"
++    if passed and target:
++        name = settings["ranking"][0]
++        objective = next(obj for obj in settings["objectives"] if obj["id"] == name)
++        passed = meets_target(target, baseline=initial["values"][name],
++                              candidate=measured["values"][name], direction=objective["direction"])
++        if passed is None:
++            raise ValueError("Undefined relative performance target against the baseline")
++        if not passed:
++            reason = target_failure
++    return {"passed": passed, "metrics": metrics, "reason": reason}
+ 
+ 
+ def prefer_service_measurements(settings, left, right):
+@@ -121,7 +132,10 @@ def service_quality_score(settings, document):
+         or document["samples"] != config["samples"]
+     ):
+         raise ValueError("Missing numerical quality evidence")
+-    return score
++    # Retained pre-intake plans used scores in the scorer's native scale.
++    if "unit" not in config:
++        return score
++    return quality_score_in_unit(score, document.get("unit"), config["unit"])
+ 
+ 
+ def service_quality_passed(settings, score, reference=None):
+@@ -131,7 +145,10 @@ def service_quality_passed(settings, score, reference=None):
+         return sign * (score - config["threshold"]) >= 0
+     if reference is None or not service_io.finite_number(reference):
+         raise ValueError("Missing compatible baseline quality reference")
+-    return sign * (score - reference) >= -config["tolerance"]
++    if "unit" not in config:
++        return sign * (score - reference) >= -config["tolerance"]
++    delta = Decimal(str(score)) - Decimal(str(reference))
++    return sign * delta >= -Decimal(str(config["tolerance"]))
+ 
+ 
+ def service_assessment(verdict, reason, **fields):
+@@ -175,8 +192,9 @@ def service_measurement_decision(role, reference_kind, gate, quality):
+         skipped = ((("quality",), "performance_gate_not_met"),)
+         if role != "candidate":
+             skipped += ((("profile",), "not_required"),)
++        reason = gate.get("reason", "performance_gate_not_met")
+         return ServiceStageDecision(
+-            service_assessment("FAIL", "performance_gate_not_met", performance=gate),
++            service_assessment("FAIL", reason, performance=gate),
+             skipped,
+         )
+     if reference_kind == "parent":
+diff --git a/src/inferrsi/harness/executor/_project.py b/src/inferrsi/harness/executor/_project.py
+index b15f773b..0d8672de 100644
+--- a/src/inferrsi/harness/executor/_project.py
++++ b/src/inferrsi/harness/executor/_project.py
+@@ -22,6 +22,10 @@ def validate_project(settings: dict) -> None:
+     for key in ("metric_key", "metric_unit", "quality_key", "scope"):
+         if not isinstance(settings[key], str) or not settings[key].strip():
+             raise ValueError(f"An explicit {key} is required")
++    if "quality_benchmark" in settings and not (
++        isinstance(settings["quality_benchmark"], str) and settings["quality_benchmark"].strip()
++    ):
++        raise ValueError("An explicit quality benchmark identity is required")
+     if settings["direction"] not in ("minimize", "maximize"):
+         raise ValueError("Metric direction must be explicit")
+     if type(settings["repetitions"]) is not int or settings["repetitions"] < 1:
+diff --git a/src/inferrsi/harness/executor/serving/_attempt.py b/src/inferrsi/harness/executor/serving/_attempt.py
+index c404a21d..6014c572 100644
+--- a/src/inferrsi/harness/executor/serving/_attempt.py
++++ b/src/inferrsi/harness/executor/serving/_attempt.py

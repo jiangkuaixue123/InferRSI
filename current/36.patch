@@ -1,0 +1,92 @@
+@@ -95,8 +96,16 @@ def test_manager_baseline_and_cli_status_share_one_service_attempt(campaign, mon
+ 
+ 
+ def test_one_service_order_and_independent_final_ignores_workspace(campaign):
++    config = settings()
++    config["quality"].update(direction="minimize", unit="%", threshold=1)
++    campaign["config"].write_text(json.dumps(config))
++    commit(campaign["repo"], quality=0.005, score_unit="fraction")
+     begin(campaign)
+-    result = submit(campaign, version="accepted", a=95, b=102)
++    failed = submit(campaign, version="wrong-quality", a=90, quality=0.02, score_unit="fraction")
++    assert failed["latest_observation"]["assessment"]["verdict"] == "FAIL"
++    assert failed["best"]["kind"] == "baseline"
++    result = submit(campaign, version="accepted", a=95, b=102, quality=0.005,
++                    score_unit="fraction")
+     attempt = result["latest_observation"]
+     assert attempt["assessment"]["verdict"] == "PASS"
+     log = events(campaign, attempt)
+@@ -445,11 +454,29 @@ def test_stagnation_is_advisory_and_recover_does_not_retrigger(campaign):
+     assert improved["stagnation"]["consecutive"] == 0
+ 
+ 
+-def test_baseline_selected_final_has_no_self_gain_requirement(campaign):
+-    begin(campaign)
++@pytest.mark.parametrize(("target_kind", "target_value", "verdict"), [
++    ("absolute", 110, "PASS"),
++    ("absolute", 95, "FAIL"),
++    ("relative_improvement_pct", 1, "FAIL"),
++])
++def test_baseline_selected_final_checks_target_without_self_gain(
++    campaign, target_kind, target_value, verdict,
++):
++    from tests.fixtures.campaign_intake import approved_start
++
++    args = approved_start(campaign["start"], overrides={
++        "protocol.target_kind": target_kind, "protocol.target_value": target_value,
++    })
++    assert main(args) == 0
++    campaign["capsys"].readouterr()
++    call(campaign, "baseline")
++    diagnose(campaign)
+     submit(campaign, version="no-improvement", a=100)
+     final = call(campaign, "final", "--reason", "No candidate selected")
+-    assert final["final"]["assessment"]["verdict"] == "PASS"
++    assessment = final["final"]["assessment"]
++    assert assessment["verdict"] == verdict
++    if verdict == "FAIL":
++        assert assessment["reason"] == "final_performance_target_not_met"
+     assert final["best"]["kind"] == "baseline"
+ 
+ 
+@@ -604,17 +631,22 @@ def test_incomplete_baseline_prevents_candidate_search(campaign):
+ def test_baseline_comparison_quality_and_pause_resume(campaign):
+     config = settings()
+     config["quality"].pop("threshold")
+-    config["quality"].update(mode="baseline_comparison", tolerance=0)
++    config["quality"].update(mode="baseline_comparison", direction="minimize", unit="%",
++                             tolerance=0.5)
+     config["stagnation"] = {"rounds": 1, "action": "pause"}
+     campaign["config"].write_text(json.dumps(config))
++    commit(campaign["repo"], quality=0.5, score_unit="%")
+     begin(campaign)
+-    result = submit(campaign, version="worse-quality", a=90, quality=0)
++    result = submit(campaign, version="worse-quality", a=90, quality=0.02, score_unit="fraction")
+     assert result["state"] == "paused"
+     assert result["latest_observation"]["assessment"]["quality_passed"] is False
+     resumed = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     repeated = call(campaign, "resume", "--reason", "Reviewed system-wide bottlenecks")
+     assert resumed["stagnation"] == repeated["stagnation"]
+     assert resumed["state"] == "active"
++    accepted = submit(campaign, version="improved", a=90, quality=0.005, score_unit="fraction")
++    assert accepted["latest_observation"]["assessment"]["verdict"] == "PASS"
++    assert accepted["latest_observation"]["execution"]["quality_score"] == 0.5
+ 
+ 
+ def test_accepted_but_unselected_candidate_keeps_its_verdict(campaign):
+@@ -866,6 +898,18 @@ def test_invalid_protocol_containers_rejected_before_campaign_writes(campaign, b
+     assert not campaign["root"].exists()
+ 
+ 
++@pytest.mark.parametrize("unit", [None, "", "unknown", " N/A ", "unspecified"])
++def test_missing_or_placeholder_quality_unit_rejected_before_campaign_writes(campaign, unit):
++    config = settings()
++    if unit is None:
++        config["quality"].pop("unit")
++    else:
++        config["quality"]["unit"] = unit
++    campaign["config"].write_text(json.dumps(config))
++    assert rejected(campaign["start"]) == 2
++    assert not campaign["root"].exists()
++
++

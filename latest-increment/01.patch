@@ -1,0 +1,88 @@
+diff --git a/src/inferrsi/harness/evaluator/_service.py b/src/inferrsi/harness/evaluator/_service.py
+index d928a2fd..b950eb4b 100644
+--- a/src/inferrsi/harness/evaluator/_service.py
++++ b/src/inferrsi/harness/evaluator/_service.py
+@@ -68,7 +68,8 @@ def service_metric_change(obj, candidate, reference):
+ def assess_service_performance(settings, measured, parent, initial, *, screening=False,
+                                target=None, target_failure="performance_gate_not_met"):
+     metrics, limits, gain, actual_gain = {}, True, False, False
+-    for obj in settings["objectives"]:
++    objectives = settings["objectives"] if parent is not None else ()
++    for obj in objectives:
+         name = obj["id"]
+         p = service_metric_change(obj, measured["values"][name], parent["values"][name])
+         b = service_metric_change(obj, measured["values"][name], initial["values"][name])
+@@ -94,7 +95,7 @@ def assess_service_performance(settings, measured, parent, initial, *, screening
+         limits &= bounded
+         actual_gain |= improved
+         gain |= metrics[name]["gain_passed"]
+-    passed = limits and (actual_gain if screening else gain)
++    passed = parent is None or (limits and (actual_gain if screening else gain))
+     reason = "performance_gate_satisfied" if passed else "performance_gate_not_met"
+     if passed and target:
+         name = settings["ranking"][0]
+diff --git a/src/inferrsi/harness/executor/serving/_attempt.py b/src/inferrsi/harness/executor/serving/_attempt.py
+index f4069d2b..6014c572 100644
+--- a/src/inferrsi/harness/executor/serving/_attempt.py
++++ b/src/inferrsi/harness/executor/serving/_attempt.py
+@@ -216,10 +216,10 @@ def execute_service_attempt(root, directory, plan, pending, deadline):
+             target_failure = "final_performance_target_not_met"
+         gate = (
+             evaluator.assess_service_performance(
+-                settings, measured, parent["measurements"], initial["measurements"],
+-                target=target, target_failure=target_failure,
++                settings, measured, parent["measurements"] if parent is not None else None,
++                initial["measurements"], target=target, target_failure=target_failure,
+             )
+-            if parent is not None
++            if parent is not None or target is not None
+             else {"passed": True, "metrics": {}}
+         )
+         decision = evaluator.service_measurement_decision(
+diff --git a/tests/apps/test_project_service_reuse.py b/tests/apps/test_project_service_reuse.py
+index 6ac15728..799e2c8c 100644
+--- a/tests/apps/test_project_service_reuse.py
++++ b/tests/apps/test_project_service_reuse.py
+@@ -454,11 +454,29 @@ def test_stagnation_is_advisory_and_recover_does_not_retrigger(campaign):
+     assert improved["stagnation"]["consecutive"] == 0
+ 
+ 
+-def test_baseline_selected_final_has_no_self_gain_requirement(campaign):
+-    begin(campaign)
++@pytest.mark.parametrize(("target_kind", "target_value", "verdict"), [
++    ("absolute", 110, "PASS"),
++    ("absolute", 95, "FAIL"),
++    ("relative_improvement_pct", 1, "FAIL"),
++])
++def test_baseline_selected_final_checks_target_without_self_gain(
++    campaign, target_kind, target_value, verdict,
++):
++    from tests.fixtures.campaign_intake import approved_start
++
++    args = approved_start(campaign["start"], overrides={
++        "protocol.target_kind": target_kind, "protocol.target_value": target_value,
++    })
++    assert main(args) == 0
++    campaign["capsys"].readouterr()
++    call(campaign, "baseline")
++    diagnose(campaign)
+     submit(campaign, version="no-improvement", a=100)
+     final = call(campaign, "final", "--reason", "No candidate selected")
+-    assert final["final"]["assessment"]["verdict"] == "PASS"
++    assessment = final["final"]["assessment"]
++    assert assessment["verdict"] == verdict
++    if verdict == "FAIL":
++        assert assessment["reason"] == "final_performance_target_not_met"
+     assert final["best"]["kind"] == "baseline"
+ 
+ 
+diff --git a/tests/harness/test_project_objectives.py b/tests/harness/test_project_objectives.py
+index 0a0dccdf..75891f35 100644
+--- a/tests/harness/test_project_objectives.py
++++ b/tests/harness/test_project_objectives.py
+@@ -80,6 +80,26 @@ def test_combined_gain_and_dual_limits_include_exact_boundary():
+     assert not evaluator.prefer_service_measurements(config, {"a": 101, "b": 10}, base["values"])
+ 
+ 
++@pytest.mark.parametrize(("kind", "limit", "passed"), [
++    ("absolute", 110, True),

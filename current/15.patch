@@ -1,0 +1,92 @@
++        if (quality["mode"] not in ("absolute", "baseline_comparison")
++                or quality["direction"] not in ("maximize", "minimize")
++                or not isinstance(quality["key"], str)
++                or not isinstance(quality.get("threshold" if quality["mode"] == "absolute"
++                                              else "tolerance"), (int, float))):
++            raise ValueError
++    except (TypeError, KeyError, ValueError) as exc:
++        raise IntakeError("invalid_record", "Invalid bound service quality conditions") from exc
++    return quality
++
++
++def reconcile_record(record: dict, spec: dict) -> dict:
++    """Recheck provenance, including older records that trusted the source label alone."""
++    _check(record, spec)
++    updated = copy.deepcopy(record)
++    fields = _field_paths(spec)
++    reopened = False
++    for path, entry in updated["fields"].items():
++        if entry["status"] in ("confirmed", "proposed", "assumed"):
++            field = fields[path]
++            if field.get("type") in ("integer", "number") or path == "protocol.quality_unit":
++                try:
++                    _coerce(field, entry.get("value"))
++                except IntakeError:
++                    updated["fields"][path] = {"value": None, "status": "unknown",
++                                               "source": entry["source"],
++                                               "rejected_value": entry.get("value")}
++                    reopened = True
++                    continue
++            bound = _bound_value(record, path, entry)
++            entry["status"] = _status_for(field, entry["source"], bound=bound)
++    quality = _bound_service_quality(updated)
++    comparator = _entry(updated, "protocol.quality_comparator")
++    if quality and quality["mode"] == "baseline_comparison" and comparator["status"] in SETTLED:
++        expected = "at_least" if quality["direction"] == "maximize" else "at_most"
++        if comparator["value"] != expected:
++            updated["fields"]["protocol.quality_comparator"] = {
++                "value": None, "source": comparator["source"], "status": "conflicting",
++                "candidates": [{"value": comparator["value"], "source": comparator["source"]},
++                               {"value": expected, "source": "service quality direction"}],
++            }
++            reopened = True
++    if reopened:
++        _bump(updated, updated["revision"] + 1)
++    return updated
++
++
++def _bump(record: dict, next_revision: int) -> None:
++    record.pop("brief_decision", None)
++    record.pop("campaign_launch", None)
++    record["revision"] = next_revision
++
++
++def _rank(status: str) -> int:
++    return {"confirmed": 2, "proposed": 1}.get(status, 0)
++
++
++def set_fields(record: dict, spec: dict, values: dict, *, source: str) -> dict:
++    if source.startswith("answer:"):
++        raise IntakeError("invalid_source", "Use intake answer to record a user reply")
++    if not isinstance(values, dict):
++        raise IntakeError("invalid_record", "values must be a mapping")
++    updated = reconcile_record(record, spec)
++    fields = _field_paths(spec)
++    reference = selected_reference(updated)
++    changed = False
++    revision = updated["revision"]
++    for path, raw in values.items():
++        if path not in fields:
++            raise IntakeError("invalid_field", f"{path} is not a field of {spec['task']}")
++        value = _coerce(fields[path], raw)
++        entry = {"value": value, "source": source}
++        if path.startswith(ACCEPTANCE) and path != REFERENCE and source in AUTHORITATIVE:
++            entry["authority_reference"] = (values.get(REFERENCE) if source == "issue"
++                                            else reference)
++        bound = _bound_value(updated, path, entry)
++        if not bound:
++            entry.pop("authority_reference", None)
++        status = _status_for(fields[path], source, bound=bound)
++        entry["status"] = status
++        current = updated["fields"].get(path)
++        if (current and current["status"] == "unknown" and current.get("asked")
++                and status == "assumed"):
++            continue
++        if current is not None and not current.get("candidates") and (
++            current.get("value") == value
++        ):
++            if _rank(status) <= _rank(current.get("status", "unknown")):
++                continue
++            updated["fields"][path] = entry
++            changed = True
++            continue

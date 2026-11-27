@@ -1,0 +1,91 @@
++    assert gate["status"] == "blocked" and gate["execution"] == "not started"
++    assert not project[3].exists()
++
++
++def test_campaign_start_retains_the_record_it_gated(project, tmp_path, capsys):  # noqa: F811
++    args = approved_start(start_arguments(project))
++    record = Path(args[-1])
++    assert cli.main(args) == 0
++    result = json.loads(capsys.readouterr().out)
++    retained = project[3] / "intake.json"
++    assert result["intake"]["gate"] == "ready"
++    assert result["intake"]["sha256"] == hashlib.sha256(retained.read_bytes()).hexdigest()
++    assert json.loads(retained.read_bytes()) == json.loads(record.read_bytes())
++    plan = json.loads((project[3] / "plan.json").read_bytes())
++    assert json.loads((project[3] / plan["intake_receipt"]).read_bytes()) == result["intake"]
++    assert cli.main(["campaign", "status", "--directory", str(project[3])]) == 0
++
++
++def test_campaign_start_without_a_record_is_blocked(project, capsys):  # noqa: F811
++    assert cli.main(start_arguments(project)) == 2
++    assert json.loads(capsys.readouterr().out)["reason"] == "missing_intake"
++    assert not project[3].exists()
++
++
++def test_day0_blocks_only_device_execution():
++    spec = spec_for("task-day-0")
++    view = intake.evaluate(intake.new_record("task-day-0", record_id="intake-day0"), spec)
++    stages = {item["stage"] for item in view["blockers"]}
++    assert stages == {"device_execution"}
++    assert "device_execution" not in view["allowed_next"]
++    record = intake.new_record("task-day-0", record_id="intake-day0")
++    record = intake.set_fields(record, spec, {
++        "day0.checkpoint": "checkpoints/model-v1",
++        "day0.tokenizer_or_processor": "tokenizer-v1",
++        "day0.target_engine_and_device": "engine x.y on device Z",
++        "day0.first_scope": "text generation",
++        "day0.reference_implementation": "reference wheel 1.0",
++        "day0.replayable_inputs": "fixtures/day0-inputs",
++        "day0.consistency_criteria": "top-1 token agreement >= 99%",
++    }, source="prompt")
++    view = intake.evaluate(record, spec)
++    assert view["complete"] is True
++    assert "device_execution" not in view["allowed_next"]
++
++
++def test_partial_fixture_asks_only_the_remaining_first_batch():
++    spec = spec_for()
++    record = build(set(PARTIAL["fields"]["values"]))
++    view = intake.evaluate(record, spec)
++    asked = {question["field"] for question in view["questions"]}
++    assert "optimization.objective" not in asked
++    assert "protocol.timing_boundary" not in asked
++    assert "acceptance.metric_key" in asked
++
++
++def test_frozen_conflict_via_cli(tmp_path, capsys):
++    record_path = tmp_path / "complete.json"
++    record_path.write_text(json.dumps(build()), encoding="utf-8")
++    assert cli.main([
++        "task", "intake", "evaluate", "--record", str(record_path),
++        "--frozen", str(PERFORMANCE / "frozen-mismatch.yaml"), "--json",
++    ]) == 0
++    result = json.loads(capsys.readouterr().out)
++    assert result["complete"] is False
++    assert result["conflicts"][0]["field"] == "acceptance.metric_key"
++    assert result["conflicts"][0]["frozen_value"] == "p99_ttft"
++
++
++def test_self_written_gate_keeps_campaign_blocked(project, tmp_path, capsys):  # noqa: F811
++    record_path = tmp_path / "record.json"
++    gate_file = tmp_path / "gate.json"
++    proposed = {**COMPLETE["acceptance"]["values"], intake.REFERENCE: str(gate_file)}
++    gate_file.write_text(json.dumps({"schema_version": 1, "acceptance": {
++        key.removeprefix("acceptance."): value for key, value in proposed.items()
++    }}))
++    cmd = ["task", "intake", "evaluate", "--record", str(record_path), "--json"]
++    guesses = dict(COMPLETE["fields"]["values"])
++    guesses.pop(intake.REFERENCE)
++    for source, values, options in (
++        ("workspace", guesses, ["--task", "task-performance"]),
++        ("frozen_gate", proposed, ["--frozen", str(gate_file)]),
++    ):
++        args = []
++        for key, value in values.items():
++            args.extend(("--set", f"{key}={value}"))
++        assert cli.main([*cmd, *options, "--source", source, *args]) == 0
++        result = json.loads(capsys.readouterr().out)
++    assert result["needs_user_input"] and not result["complete"]
++    assert result["allowed_next"] == ["read_only_preparation"]
++    questions = {q["field"]: q for q in result["questions"]}
++    assert {"optimization.objective", "acceptance.metric_key", intake.REFERENCE} <= questions.keys()

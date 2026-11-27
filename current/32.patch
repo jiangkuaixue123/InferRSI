@@ -1,0 +1,134 @@
++      "type": "text",
++      "question": "Which accuracy metric or baseline-relative quality difference is scored?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_comparator",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "choice",
++      "question": "Which comparison must the accuracy result satisfy?",
++      "options": [{"value": "at_least"}, {"value": "at_most"}, {"value": "equal"}],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_limit",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "number",
++      "question": "What numeric accuracy threshold or maximum regression is acceptable?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_unit",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "In what units is the accuracy threshold expressed?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "environment.quality_command",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which command checks output quality on a candidate?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_failure_policy",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "choice",
++      "question": "What happens when a candidate fails the quality check?",
++      "options": [
++        {"value": "revert_candidate", "hint": "discard the candidate and keep the incumbent"},
++        {"value": "keep_with_flag", "hint": "retain the candidate but flag the quality gap"}
++      ],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.timing_boundary",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "Where is the timing boundary, and does it include queueing or transfer?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.repository",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which prepared repository is the baseline checkout?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.model",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which model identity or path does the run load?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.model_revision",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which model revision is pinned?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "optimization.framework",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which engine or framework serves the model?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.backend",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which backend runs the workload?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.device_model",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which device SKU or chip must the measurement use?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.workload",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which fixed workload, input set and concurrency replay for every trial?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.baseline_command",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which command runs the unchanged baseline?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.repetitions",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "integer",
