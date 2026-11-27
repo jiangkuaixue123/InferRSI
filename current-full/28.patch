@@ -1,0 +1,77 @@
+--- a/src/inferrsi/harness/manager/_session.py
++++ b/src/inferrsi/harness/manager/_session.py
+@@ -18,6 +18,7 @@ def run_session(
+     task_source: Path | None = None,
+     knowledge_reader=None, prepare_context=None, external_knowledge=None, external_provider=None,
+     external_project=None, external_provider_for=None, report_metadata=None,
++    prepare_project_only=False,
+ ) -> dict:
+     """Run one typed session operation with dependencies supplied by the host."""
+     from .. import evaluator, executor, indexer
+@@ -26,6 +27,8 @@ def run_session(
+ 
+     if not isinstance(request, SessionRequest):
+         raise TypeError("run_session requires a managed session request")
++    if prepare_project_only and not isinstance(request, StartProjectSession):
++        raise ValueError("Only project starts can prepare without initializing a session")
+     root = request.session.resolve()
+     if isinstance(request, (StartProjectSession, StartBenchmarkSession)):
+         project = isinstance(request, StartProjectSession)
+@@ -72,6 +75,7 @@ def run_session(
+                 "metric_key",
+                 "metric_unit",
+                 "quality_key",
++                "quality_benchmark",
+                 "scope",
+                 "direction",
+                 "min_improvement_pct",
+@@ -111,7 +115,7 @@ def run_session(
+                     **({"allow_final_continuation": True} if allow_continuation else {}),
+                     **settings,
+                 }
+-                result = state.initialize(root, plan)
++                result = {"plan": plan} if prepare_project_only else state.initialize(root, plan)
+                 result["instructions"] = (
+                     "Run campaign baseline before candidate search. Record the measured "
+                     "bottleneck with campaign diagnose before knowledge or rounds. "
+@@ -133,7 +137,8 @@ def run_session(
+                 raise ValueError("Campaign output must be outside the editable project")
+             identity(repo, request.include)  # Reject invalid inputs before preparation writes.
+             specification = {key: getattr(request, key) for key in (
+-                "metric_key", "metric_unit", "quality_key", "scope", "direction",
++                "metric_key", "metric_unit", "quality_key", "quality_benchmark",
++                "scope", "direction",
+                 "min_improvement_pct", "repetitions", "warmups", "decision",
+                 "require_explanation")}
+             specification.update(measure_command=shlex.split(request.measure_command),
+@@ -180,7 +185,7 @@ def run_session(
+             plan["external_knowledge_project"] = external_project
+         if report_metadata is not None:
+             plan["report_metadata"] = report_metadata
+-        result = state.initialize(root, plan)
++        result = {"plan": plan} if prepare_project_only else state.initialize(root, plan)
+         operation = "campaign" if project else "benchmarks session"
+         result["instructions"] = (
+             f"Read the frozen TASK.md. Record the measured bottleneck with {operation} "
+diff --git a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
+index 3abf1a04..3e2192c5 100644
+--- a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
++++ b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
+@@ -1,7 +1,7 @@
+ {
+   "schema_version": 1,
+   "repository": "https://github.com/InferMatrixLab/InferRSI",
+-  "source_revision": "bf14fec0bd909efcfeb2bc02d69fe227d0c51ce6",
++  "source_revision": "6f5775d29d3546732113900ef811d60a5943aa62",
+   "registry": {
+     "path": "src/inferrsi/knowledge/data/skill_library/skill-index.json",
+     "sha256": "d243e2ae44c7badc8e68788153de35fe6ac31de618b7499fef6339eadf396871"
+diff --git a/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json b/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
+index 93037dda..4fc6071a 100644
+--- a/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
++++ b/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
+@@ -614,7 +614,7 @@
+       "description": "Select the starting route for day-0 model support, inference performance optimization, debugging, accuracy repair, version alignment, derived-engine development or independent runtime bring-up."
+     },
+     "files": {
+-      "SKILL.md": "3dae791f61b26810332e05fbabe6fd7113abf9ed8609aef663535a267525849c",

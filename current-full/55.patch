@@ -1,0 +1,4 @@
++    assert f"knowledge/data/skill_library/tasks/{task}/intake.json" in inventory
+ for name in inventory:
+     if "/skill_library/" in name and name.endswith("/SKILL.md"):
+         assert name.removesuffix("SKILL.md") + "metadata.json" not in inventory, name

@@ -1,0 +1,102 @@
++ALL_VALUES = {**COMPLETE["fields"]["values"], **COMPLETE["acceptance"]["values"]}
++
++
++def spec_for(task: str = "task-performance") -> dict:
++    return task_intake.load_spec(task)
++
++
++def build(paths: set[str] | None = None, *, task: str = "task-performance") -> dict:
++    """A record built from the complete fixture, optionally restricted to ``paths``."""
++    spec = spec_for(task)
++    record = intake.new_record(task, record_id="intake-test")
++    if task == "task-performance":
++        chosen = {path: value for path, value in ALL_VALUES.items()
++                  if paths is None or path in paths}
++        stated = {path: value for path, value in chosen.items()
++                  if path in COMPLETE["fields"]["values"]}
++        accepted = {path: value for path, value in chosen.items()
++                    if path in COMPLETE["acceptance"]["values"]}
++        if stated:
++            record = intake.set_fields(record, spec, stated, source="prompt")
++        if accepted:
++            accepted[intake.REFERENCE] = ALL_VALUES[intake.REFERENCE]
++            record = intake.set_fields(record, spec, accepted, source="issue")
++    return record
++
++
++def ask(record: dict, spec: dict, frozen: dict | None = None) -> tuple[dict, dict]:
++    """Evaluate and persist the open questions, as the CLI does."""
++    view = intake.evaluate(record, spec, frozen=frozen)
++    record = json.loads(json.dumps(record))
++    record["open_questions"] = view["questions"]
++    return record, view
++
++
++def card_id(record, field):
++    return next(q["id"] for q in record["open_questions"] if q["field"] == field)
++
++
++def batch_paths(spec: dict, batch: int) -> set[str]:
++    return {field["path"] for field in spec["fields"] if field.get("batch", 1) == batch}
++
++
++def test_packaged_specs_validate_and_declare_their_targets():
++    for task in ("task-performance", "task-day-0"):
++        spec = spec_for(task)
++        assert spec["task"] == task
++        assert intake.validate_spec(spec) == []
++        assert all(field["maps_to"] in intake.MAP_TARGETS for field in spec["fields"])
++
++
++def test_day0_fields_stay_out_of_task_input_v1():
++    spec = spec_for("task-day-0")
++    assert all(field["maps_to"] == "day0-spec" for field in spec["fields"])
++
++
++def approved_record():
++    record, view = ask(build(), spec_for())
++    return intake.answer(record, spec_for(), question_id=view["task_brief"]["id"], value="approve")
++
++
++def test_complete_fields_require_separate_review_before_search():
++    spec = spec_for()
++    record, view = ask(build(), spec)
++    assert view["brief_review"] == "awaiting_confirmation"
++    brief = view["task_brief"]
++    assert brief["performance_target"] == "p95_ttft <= 180 ms"
++    assert brief["quality_gate"] == "token mismatches <= 0 tokens"
++    assert brief["benchmark"] == ALL_VALUES["protocol.quality_benchmark"]
++    assert brief["conditions"] == ALL_VALUES
++    assert [q["id"] for q in view["questions"]] == [brief["id"]]
++    assert not view["complete"] and view["needs_user_input"]
++    assert view["allowed_next"] == ["read_only_preparation"]
++    approved = intake.evaluate(approved_record(), spec)
++    assert approved["complete"] and not approved["questions"]
++    assert approved["brief_review"] == "approved"
++    assert approved["allowed_next"] == ["read_only_preparation", "baseline_measurement",
++                                       "candidate_search"]
++    assert approved["execution"] == "not started"
++
++
++def test_empty_record_asks_only_the_first_batch():
++    spec = spec_for()
++    view = intake.evaluate(intake.new_record("task-performance", record_id="intake-empty"), spec)
++    asked = {question["field"] for question in view["questions"]}
++    expected = batch_paths(spec, 1) - {"acceptance.min_improvement_pct"}
++    assert asked == expected
++    assert all(question["batch"] == 1 for question in view["questions"])
++    assert view["complete"] is False
++
++
++def test_second_batch_appears_once_the_first_is_settled():
++    spec = spec_for()
++    record = build(batch_paths(spec, 1))
++    view = intake.evaluate(record, spec)
++    asked = {question["field"] for question in view["questions"]}
++    assert asked == batch_paths(spec, 2)
++    assert all(question["batch"] == 2 for question in view["questions"])
++
++
++def test_unknown_answer_blocks_its_stage_and_is_not_asked_again():
++    spec = spec_for()
++    record, view = ask(intake.new_record("task-performance", record_id="intake-unknown"), spec)

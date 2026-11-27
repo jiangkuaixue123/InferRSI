@@ -1,0 +1,100 @@
++++ b/tests/fixtures/service_reuse.py
+@@ -12,6 +12,7 @@ from inferrsi.apps.cli import main
+ from inferrsi.apps.storage import artifacts
+ from inferrsi.harness.records import artifact_primitives, evidence, knowledge_capture
+ from inferrsi.knowledge import knowledge_operations
++from tests.fixtures.campaign_intake import approved_start, preparation_arguments
+ from tests.fixtures.diagnosis import diagnosis_args
+ 
+ 
+@@ -120,6 +121,7 @@ def settings():
+             "mode": "absolute",
+             "dataset": "synthetic",
+             "scorer": "exact-v1",
++            "unit": "points",
+             "samples": 2,
+             "key": "quality",
+             "direction": "maximize",
+@@ -174,7 +176,7 @@ def campaign(tmp_path, capsys):
+ 
+ def call(campaign, action, *extra, expected=0):
+     args = (
+-        campaign["start"]
++        approved_start(campaign["start"])
+         if action == "start"
+         else ["campaign", action, "--session", str(campaign["root"]), *map(str, extra)]
+     )
+@@ -207,5 +209,7 @@ def submit(campaign, *, expected=0, retry=None, **changes):
+ 
+ def rejected(arguments):
+     with pytest.raises(SystemExit) as raised:
++        if arguments[:2] == ["campaign", "start"]:
++            arguments = preparation_arguments(arguments)
+         main(arguments)
+     return raised.value.code
+diff --git a/tests/fixtures/service_reuse_protocol.py b/tests/fixtures/service_reuse_protocol.py
+index 4c3cf3ca..cd1a3e1b 100644
+--- a/tests/fixtures/service_reuse_protocol.py
++++ b/tests/fixtures/service_reuse_protocol.py
+@@ -70,6 +70,7 @@ if phase == "service":
+                 body.update(
+                     dataset="synthetic",
+                     scorer="exact-v1",
++                    unit=config.get("score_unit", "points"),
+                     samples=2,
+                     quality=config.get("quality", 1),
+                 )
+diff --git a/tests/harness/test_project_objectives.py b/tests/harness/test_project_objectives.py
+index 0a0dccdf..75891f35 100644
+--- a/tests/harness/test_project_objectives.py
++++ b/tests/harness/test_project_objectives.py
+@@ -80,6 +80,26 @@ def test_combined_gain_and_dual_limits_include_exact_boundary():
+     assert not evaluator.prefer_service_measurements(config, {"a": 101, "b": 10}, base["values"])
+ 
+ 
++@pytest.mark.parametrize(("kind", "limit", "passed"), [
++    ("absolute", 110, True),
++    ("absolute", 95, False),
++    ("relative_improvement_pct", 1, False),
++])
++def test_service_final_target_applies_without_a_comparison_parent(kind, limit, passed):
++    config = {"objectives": [objective()], "ranking": ["a"]}
++    baseline = {"values": {"a": 100}}
++    gate = evaluator.assess_service_performance(
++        config, baseline, None, baseline, target={"target_kind": kind, "target_value": limit},
++        target_failure="final_performance_target_not_met",
++    )
++    assert gate["passed"] is passed
++    decision = evaluator.service_measurement_decision("final", None, gate, {})
++    if passed:
++        assert decision.assessment is None  # Continue to the independent quality check.
++    else:
++        assert decision.assessment["reason"] == "final_performance_target_not_met"
++
++
+ def test_screening_actual_gain_is_not_an_estimated_or_formal_threshold():
+     obj = objective()
+     config = {"objectives": [obj]}
+diff --git a/tests/harness/test_service_reference_evidence.py b/tests/harness/test_service_reference_evidence.py
+index 98c9bd33..70e1f2d2 100644
+--- a/tests/harness/test_service_reference_evidence.py
++++ b/tests/harness/test_service_reference_evidence.py
+@@ -115,6 +115,7 @@ def test_changed_external_baseline_quality_reference_blocks_final(campaign):
+         "run_id": "external-run",
+         "dataset": "synthetic",
+         "scorer": "exact-v1",
++        "unit": "points",
+         "samples": 2,
+         "quality": 1,
+     }
+diff --git a/tests/repository/check_installed.py b/tests/repository/check_installed.py
+index 008b28d9..2fcc63be 100644
+--- a/tests/repository/check_installed.py
++++ b/tests/repository/check_installed.py
+@@ -656,7 +656,9 @@ inventory = {
+     **_inventory(files("inferrsi").joinpath("knowledge", "data"), "knowledge/data"),
+     **_inventory(files("inferrsi").joinpath("resources", "repo_packs"), "resources/repo_packs"),
+ }
+-assert len(inventory) == 775, f"installed resource count is {len(inventory)}, expected 775"
++assert len(inventory) == 777, f"installed resource count is {len(inventory)}, expected 777"
++for task in ("task-day-0", "task-performance"):

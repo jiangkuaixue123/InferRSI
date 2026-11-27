@@ -1,0 +1,104 @@
++    if getattr(args, "json", False):
++        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
++    else:
++        print(render_summary(result) if args.intake_action == "summary" else render(result))
++    return 0
+diff --git a/src/inferrsi/harness/evaluator/__init__.py b/src/inferrsi/harness/evaluator/__init__.py
+index 2eee432c..09fa0e0a 100644
+--- a/src/inferrsi/harness/evaluator/__init__.py
++++ b/src/inferrsi/harness/evaluator/__init__.py
+@@ -16,7 +16,7 @@ from ._measurement import (
+     relative_mad,
+     validate_mechanism,
+ )
+-from ._project import assess_project, inspect_project_step, project_steps
++from ._project import assess_project, inspect_project_step, project_steps, quality_unit_declared
+ from ._service import (
+     ServiceStageDecision,
+     aggregate_service_measurements,
+@@ -62,6 +62,7 @@ __all__ = [
+     "prefer_service_measurements",
+     "profile_evidence",
+     "project_steps",
++    "quality_unit_declared",
+     "relative_mad",
+     "service_assessment",
+     "service_choice",
+@@ -83,7 +84,9 @@ __all__ = [
+ def assess_ordinary(root, directory, plan, execution, mechanism=None, *, assess_packaged):
+     """Read project evidence or delegate to the packaged task's supplied assessor."""
+     if plan["task_source"] == "project":
++        target = plan.get("performance_target") if directory.parent == root / "final" else None
+         return assess_project(
+-            directory, plan["evaluation_settings"], execution, mechanism=mechanism,
++            directory, plan["evaluation_settings"], execution,
++            mechanism=mechanism, final_target=target,
+         )
+     return assess_packaged(root, directory, plan, execution)
+diff --git a/src/inferrsi/harness/evaluator/_project.py b/src/inferrsi/harness/evaluator/_project.py
+index ca0c2630..c4a25920 100644
+--- a/src/inferrsi/harness/evaluator/_project.py
++++ b/src/inferrsi/harness/evaluator/_project.py
+@@ -2,6 +2,7 @@
+ 
+ import json
+ import math
++from decimal import Decimal
+ from pathlib import Path
+ from statistics import median
+ 
+@@ -33,6 +34,42 @@ def _value(document, key):
+     return value
+ 
+ 
++def meets_target(target, *, baseline, candidate, direction):
++    if candidate is None:
++        return None
++    if target["target_kind"] == "absolute":
++        limit = target["target_value"]
++        return candidate <= limit if direction == "minimize" else candidate >= limit
++    if baseline in (None, 0):
++        return None
++    change = (candidate - baseline) / abs(baseline) * 100
++    if not math.isfinite(change):
++        return None
++    return (change if direction == "maximize" else -change) >= target["target_value"]
++
++
++UNSPECIFIED_QUALITY_UNITS = ("", "unknown", "unspecified", "n/a")
++
++
++def quality_unit_declared(unit) -> bool:
++    return isinstance(unit, str) and unit.strip().lower() not in UNSPECIFIED_QUALITY_UNITS
++
++
++def quality_score_in_unit(score, reported_unit, approved_unit):
++    """Return the score in the frozen unit; only proportional scales can cross units."""
++    if not (quality_unit_declared(reported_unit) and quality_unit_declared(approved_unit)):
++        raise ValueError("quality_unit_mismatch")
++    if reported_unit == approved_unit:
++        return score
++    scales = {"%": 2, "percent": 2, "fraction": 0, "ratio": 0}
++    if reported_unit not in scales or approved_unit not in scales:
++        raise ValueError("quality_unit_mismatch")
++    converted = float(Decimal(str(score)).scaleb(scales[approved_unit] - scales[reported_unit]))
++    if not math.isfinite(converted):
++        raise ValueError("quality_unit_mismatch")
++    return converted
++
++
+ def inspect_project_step(
+     directory: Path, settings: dict, definition: dict, execution: dict,
+ ) -> dict:
+@@ -52,7 +89,29 @@ def inspect_project_step(
+         return {**failure, "reason": "missing_or_invalid_result"}
+     evidence = {relative: sha256(path)}
+     rejected = document.get("status") == "candidate_failure"
++    benchmark = settings.get("quality_benchmark")
++    if (definition["phase"] == "quality" and benchmark is not None and not rejected
++            and document.get("dataset") != benchmark):
++        return {**failure, "reason": "quality_benchmark_mismatch", "evidence_files": evidence}
+     quality = _value(document, settings["quality_key"])
++    bound = settings.get("quality_bound")
++    if definition["phase"] == "quality" and bound and quality is True:
++        score = _value(document, bound["metric"])

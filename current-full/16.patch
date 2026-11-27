@@ -1,0 +1,96 @@
++        if (current is not None and current.get("status") == "conflicting"
++                and isinstance(current.get("candidates"), list)):
++            if all(item["value"] != value for item in current["candidates"]):
++                current["candidates"].append({"value": value, "source": source})
++                changed = True
++            continue
++        if (current is not None and current.get("status") not in (None, "unknown")
++                and current.get("value") is not None and current.get("value") != value):
++            disagrees_with_answer = bound and _card_source(path, current["source"])
++            if _rank(status) > _rank(current["status"]) and not disagrees_with_answer:
++                updated["fields"][path] = entry
++                changed = True
++            elif _rank(status) < _rank(current["status"]):
++                continue
++            else:
++                updated["fields"][path] = {"value": None, "source": source,
++                                           "status": "conflicting",
++                                           "candidates": [
++                                               {"value": current["value"],
++                                                "source": current.get("source", "unknown")},
++                                               {"value": value, "source": source},
++                                           ]}
++                changed = True
++            continue
++        if current is not None and current.get("asked") and status != "assumed":
++            entry["asked"] = True
++        updated["fields"][path] = entry
++        changed = True
++    if changed:
++        _bump(updated, revision + 1)
++    return updated
++
++
++def _applicable(record: dict, field: dict) -> bool:
++    for dep in field.get("depends_on", []):
++        if not _settled(record, dep):
++            return False
++    when = field.get("required_when")
++    if isinstance(when, dict):
++        entry = _entry(record, when["field"])
++        if entry.get("value") != when.get("equals"):
++            return False
++    return True
++
++
++def _question(record: dict, field: dict) -> dict:
++    snapshot = {"__primary_task__": record["primary_task"]["value"]}
++    dependencies = list(field.get("depends_on", []))
++    when = field.get("required_when")
++    if isinstance(when, dict):
++        dependencies.append(when["field"])
++    for dep in dependencies:
++        snapshot[dep] = _entry(record, dep).get("value")
++    options = field.get("options", [])
++    entry = _entry(record, field["path"])
++    if entry["status"] == "assumed":
++        suggestion = {"value": entry["value"], "hint": f"suggested by {entry['source']}"}
++        options = [suggestion, *(item for item in options if item["value"] != entry["value"])]
++        snapshot["__suggestion__"] = entry["value"]
++    if entry.get("status") == "conflicting" and isinstance(entry.get("candidates"), list):
++        options = [{"value": item["value"], "hint": f"from {item['source']}"}
++                   for item in entry["candidates"]]
++    card = {
++        "field": field["path"],
++        "batch": field.get("batch", 1),
++        "question": field["question"],
++        "options": options,
++        "fallback": "unknown",
++        "depends_on": snapshot,
++    }
++    # Keep a batch sibling's token across unrelated edits. A reissued card gets
++    # the new revision even if a previous set of choices eventually comes back.
++    issued = record["revision"]
++    for prior in record.get("open_questions", []):
++        if isinstance(prior, dict) and all(prior.get(key) == value for key, value in card.items()):
++            issued = prior.get("issued_revision", issued)
++            break
++    identity = _canonical([record["record_id"], issued, card])
++    digest = hashlib.sha256(identity.encode()).hexdigest()
++    return {**card, "id": f"{_QUESTION}{field['path']}:{digest}", "issued_revision": issued}
++
++
++def _frozen_conflicts(record: dict, spec: dict, frozen: dict | None) -> list[dict]:
++    if not frozen:
++        return []
++    conflicts = []
++    for field in spec["fields"]:
++        path = field["path"]
++        if not path.startswith(ACCEPTANCE) or path not in frozen:
++            continue
++        entry = _entry(record, path)
++        if entry.get("value") is None:
++            continue
++        if _canonical(entry["value"]) != _canonical(frozen[path]):
++            conflicts.append({
++                "field": path,

@@ -1,0 +1,109 @@
++def _check(record: dict, spec: dict) -> None:
++    problems = validate_record(record, spec)
++    if problems:
++        first = problems[0]
++        raise IntakeError("invalid_record", f"{first['field']}: {first['message']}")
++
++
++def _entry(record: dict, path: str) -> dict:
++    return record["fields"].get(path) or {"value": None, "source": "unknown",
++                                          "status": "unknown", "asked": False}
++
++
++def _settled(record: dict, path: str) -> bool:
++    return _entry(record, path).get("status") in SETTLED
++
++
++def _typed_value(field: dict, value: object) -> object:
++    kind = field.get("type", "text")
++    if kind == "number":
++        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
++            raise IntakeError("invalid_value", f"{field['path']} must be a finite number")
++        try:
++            number = float(value)
++        except (OverflowError, ValueError) as exc:
++            raise IntakeError("invalid_value", f"{field['path']} must be a finite number") from exc
++        if not math.isfinite(number):
++            raise IntakeError("invalid_value", f"{field['path']} must be a finite number")
++        return number
++    if kind == "integer":
++        if type(value) is int:
++            return value
++        if isinstance(value, str):
++            try:
++                return int(value)
++            except ValueError:
++                pass
++        raise IntakeError("invalid_value", f"{field['path']} must be an integer")
++    if kind == "choice":
++        allowed = [option["value"] for option in field.get("options", [])]
++        if value not in allowed:
++            raise IntakeError(
++                "invalid_value", f"{field['path']} must be one of {', '.join(allowed)}")
++        return value
++    if not isinstance(value, str) or not value.strip():
++        raise IntakeError("invalid_value", f"{field['path']} must be a non-empty string")
++    return value
++
++
++def _coerce(field: dict, value: object) -> object:
++    typed = _typed_value(field, value)
++    if field["maps_to"] == "task-input/v1" and field.get("type") in ("integer", "number"):
++        mapped = task_input.BY_PATH[field["path"]]
++        problem = task_input.field_value_problem(mapped, typed)
++        if problem:
++            raise IntakeError("invalid_value", f"{mapped.path} {problem}")
++    if field["path"] == "protocol.quality_unit" and not quality_unit_declared(typed):
++        raise IntakeError("invalid_value", f"{field['path']} must name a unit, not {typed!r}")
++    return typed
++
++
++def _card_source(path: str, source: str) -> bool:
++    # Older settled answers retain their field-only provenance.
++    return source.split(":", 3)[:3] == ["answer", "q", path]
++
++
++def _user_source(path: str, source: str) -> bool:
++    return source in ("prompt", "grilling_brief") or _card_source(path, source)
++
++
++def selected_reference(record: dict) -> str | None:
++    entry = _entry(record, REFERENCE)
++    if entry["status"] == "confirmed" and _user_source(REFERENCE, entry.get("source", "")):
++        return entry["value"]
++    return None
++
++
++def _status_for(field: dict, source: str, *, bound: bool = False) -> str:
++    path = field["path"]
++    from_user = _user_source(path, source)
++    if path == REFERENCE:
++        return "confirmed" if from_user else "assumed"
++    if path.startswith(ACCEPTANCE):
++        if bound:
++            return "confirmed"
++        return "proposed" if from_user else "assumed"
++    if field.get("user_choice") and not from_user:
++        return "assumed"
++    return "confirmed"
++
++
++def _bound_value(record: dict, path: str, entry: dict) -> bool:
++    reference = selected_reference(record)
++    if not reference or entry.get("authority_reference") != reference:
++        return False
++    snapshot = record.get("selected_gate")
++    if isinstance(snapshot, dict) and snapshot.get("reference") == reference:
++        return (entry["source"] == "frozen_gate"
++                and snapshot["values"].get(path) == entry.get("value"))
++    return entry["source"] == "issue"
++
++
++def _bound_service_quality(record: dict) -> dict | None:
++    launch = record.get("campaign_launch", {})
++    if not isinstance(launch, dict):
++        raise IntakeError("invalid_record", "campaign_launch must be an object")
++    if launch.get("evaluation_mode") != "service_reuse":
++        return None
++    try:
++        quality = launch["evaluation_settings"]["quality"]

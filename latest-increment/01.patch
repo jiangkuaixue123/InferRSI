@@ -1,0 +1,107 @@
+diff --git a/src/inferrsi/harness/evaluator/__init__.py b/src/inferrsi/harness/evaluator/__init__.py
+index 76df2262..09fa0e0a 100644
+--- a/src/inferrsi/harness/evaluator/__init__.py
++++ b/src/inferrsi/harness/evaluator/__init__.py
+@@ -16,8 +16,7 @@ from ._measurement import (
+     relative_mad,
+     validate_mechanism,
+ )
+-from ._project import assess_project, inspect_project_step, project_steps
+-from ._quality import quality_unit_declared
++from ._project import assess_project, inspect_project_step, project_steps, quality_unit_declared
+ from ._service import (
+     ServiceStageDecision,
+     aggregate_service_measurements,
+diff --git a/src/inferrsi/harness/evaluator/_project.py b/src/inferrsi/harness/evaluator/_project.py
+index 2510c5e9..c4a25920 100644
+--- a/src/inferrsi/harness/evaluator/_project.py
++++ b/src/inferrsi/harness/evaluator/_project.py
+@@ -2,13 +2,13 @@
+ 
+ import json
+ import math
++from decimal import Decimal
+ from pathlib import Path
+ from statistics import median
+ 
+ from inferrsi.harness.records.artifact_primitives import sha256
+ 
+ from ._measurement import explain, paired_statistics, profile_evidence, validate_mechanism
+-from ._quality import quality_score_in_unit
+ 
+ 
+ def project_steps(settings: dict) -> list[dict]:
+@@ -48,6 +48,28 @@ def meets_target(target, *, baseline, candidate, direction):
+     return (change if direction == "maximize" else -change) >= target["target_value"]
+ 
+ 
++UNSPECIFIED_QUALITY_UNITS = ("", "unknown", "unspecified", "n/a")
++
++
++def quality_unit_declared(unit) -> bool:
++    return isinstance(unit, str) and unit.strip().lower() not in UNSPECIFIED_QUALITY_UNITS
++
++
++def quality_score_in_unit(score, reported_unit, approved_unit):
++    """Return the score in the frozen unit; only proportional scales can cross units."""
++    if not (quality_unit_declared(reported_unit) and quality_unit_declared(approved_unit)):
++        raise ValueError("quality_unit_mismatch")
++    if reported_unit == approved_unit:
++        return score
++    scales = {"%": 2, "percent": 2, "fraction": 0, "ratio": 0}
++    if reported_unit not in scales or approved_unit not in scales:
++        raise ValueError("quality_unit_mismatch")
++    converted = float(Decimal(str(score)).scaleb(scales[approved_unit] - scales[reported_unit]))
++    if not math.isfinite(converted):
++        raise ValueError("quality_unit_mismatch")
++    return converted
++
++
+ def inspect_project_step(
+     directory: Path, settings: dict, definition: dict, execution: dict,
+ ) -> dict:
+diff --git a/src/inferrsi/harness/evaluator/_quality.py b/src/inferrsi/harness/evaluator/_quality.py
+deleted file mode 100644
+index 4c4d0a54..00000000
+--- a/src/inferrsi/harness/evaluator/_quality.py
++++ /dev/null
+@@ -1,25 +0,0 @@
+-"""Interpret scorer output in the unit declared by the frozen quality gate."""
+-
+-import math
+-from decimal import Decimal
+-
+-UNSPECIFIED_QUALITY_UNITS = ("", "unknown", "unspecified", "n/a")
+-
+-
+-def quality_unit_declared(unit) -> bool:
+-    return isinstance(unit, str) and unit.strip().lower() not in UNSPECIFIED_QUALITY_UNITS
+-
+-
+-def quality_score_in_unit(score, reported_unit, approved_unit):
+-    """Return the score in the frozen unit; only proportional scales can cross units."""
+-    if not (quality_unit_declared(reported_unit) and quality_unit_declared(approved_unit)):
+-        raise ValueError("quality_unit_mismatch")
+-    if reported_unit == approved_unit:
+-        return score
+-    scales = {"%": 2, "percent": 2, "fraction": 0, "ratio": 0}
+-    if reported_unit not in scales or approved_unit not in scales:
+-        raise ValueError("quality_unit_mismatch")
+-    converted = float(Decimal(str(score)).scaleb(scales[approved_unit] - scales[reported_unit]))
+-    if not math.isfinite(converted):
+-        raise ValueError("quality_unit_mismatch")
+-    return converted
+diff --git a/src/inferrsi/harness/evaluator/_service.py b/src/inferrsi/harness/evaluator/_service.py
+index b950eb4b..a6fcd199 100644
+--- a/src/inferrsi/harness/evaluator/_service.py
++++ b/src/inferrsi/harness/evaluator/_service.py
+@@ -5,8 +5,7 @@ from decimal import Decimal
+ from statistics import mean, median
+ 
+ from ..records import service_io
+-from ._project import meets_target
+-from ._quality import quality_score_in_unit
++from ._project import meets_target, quality_score_in_unit
+ 
+ 
+ def _metric_value(document, key):
