@@ -1,0 +1,68 @@
++to approve this exact brief or request changes. Wait for a fresh explicit reply.
++Record it with `task intake answer` using the returned `q:task_brief:...` ID and
++`approve` or `revise`. For revisions, apply the corrections and present the
++entire updated brief on a fresh card. This final review also applies to a fully
++specified initial prompt. Until approval, allow only read-only preparation.
++Pass the approved record to `campaign start --intake <record.json>` and use its
++criteria in the frozen protocol and final evaluation.
++
+ ## Optimize an ordinary user project
+ 
+ Default to the current Agent conversation. Read `campaign start --help` through
+@@ -87,6 +141,12 @@ Declare every execution input with repeatable `--include`; freeze scripts and
+ inputs through `--protocol`. Checks must use the retained `{candidate}`,
+ `{baseline}`, `{protocol}` and output `{result}` paths as appropriate. Confirm
+ they execute the submitted code, not an unrelated installed package or service.
++For AB/BA, pass the approved dataset version and split as `--quality-benchmark`.
++For a scored result, the quality script self-reports the corpus it evaluated in
++the top-level `dataset` field. Harness checks the reported label against the
++approved identity. Include the score's `unit` on numeric quality receipts for
++both AB/BA and service reuse. Show the approved score scale and, for a service
++baseline tolerance on percent scores, the allowed difference in percentage points.
+ This command uses the same Harness controller as the packaged task path below.
+ 
+ Edit the returned working candidate. Submit each hypothesis and candidate with
+diff --git a/plugins/workswarm/inferrsi/skills/inferrsi/SKILL.md b/plugins/workswarm/inferrsi/skills/inferrsi/SKILL.md
+index 6ad0d78a..3d5a3d7a 100644
+--- a/plugins/workswarm/inferrsi/skills/inferrsi/SKILL.md
++++ b/plugins/workswarm/inferrsi/skills/inferrsi/SKILL.md
+@@ -97,20 +97,43 @@ Checkout metadata operations such as `skills show` use optional PyYAML.
+ 
+ ## Optimize an ordinary user project
+ 
+-Default to the current Agent conversation. Use `campaign start --help` through
+-the selected runtime. Prepare explicit task instructions, workload, measurement
+-and quality scripts, metric/unit/direction, gates, declared project files and
+-budget before search. Harness freezes those supplied conditions; it does not
+-infer quality criteria from natural-language goals. Resolve consequential
+-missing conditions with the user instead of inventing them.
++Default to the current Agent conversation. After reading the `task-performance`
++primary skill, create a fresh intake record in the target workspace. Evaluate it
++before building, profiling, measuring or choosing gates. Include only values
++the user supplied when using `--source prompt`.
++
++```text
++python -X utf8 "<launcher>" task intake evaluate --task task-performance --record <record.json> --json
++```
++
++If `needs_user_input` is true, ask the user to resolve the first batch of open
++decisions in WorkSwarm and wait for the reply. Record only actual replies with
++`task intake answer --record <record.json> --question <id> --value <value>`
++or `--unknown`, then re-evaluate. Use `--source repo_inspection` for workspace
++facts and `--frozen <user-selected-file>` for a frozen acceptance file the user
++selects. Resolve the numeric performance goal, workload and benchmark identity,
++quality metric and tolerance, baseline, environment and budget before launch.
+ Ordinary optimization does not require Benchmark; Benchmark supplies packaged
+ tasks and their task-specific rules for the task-library entry.
+ 
+-Use `campaign start` with an output directory outside the editable project,
+-repeatable `--include` for all source/configuration inputs and `--protocol` for
+-fixed scripts/inputs. Confirm checks use retained `{candidate}`, `{baseline}`,
+-`{protocol}` and `{result}` paths and execute that version rather than another
+-installed package or service. This shares the packaged task's Harness controller.
++Use `campaign start --help` to assemble the actual launch options. Choose an
++output directory outside the editable project, repeat `--include` for all
++source and configuration inputs, and use `--protocol` for fixed scripts and
++inputs. Check that commands use the retained `{candidate}`, `{baseline}`,
++`{protocol}` and `{result}` paths and execute the intended version. For AB/BA,
++set `--quality-benchmark` to the approved dataset identity and make the quality

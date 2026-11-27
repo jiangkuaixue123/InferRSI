@@ -1,0 +1,90 @@
++    error = json.loads(capsys.readouterr().out)
++    assert error["error"] in ("stale_answer", "already_answered")
++
++
++def test_frozen_values_read_the_gate_task_file():
++    values = task_intake.frozen_values(PERFORMANCE / "frozen-gate.yaml")
++    assert values["acceptance.metric_key"] == "p95_ttft"
++    assert values["acceptance.min_improvement_pct"] == 10.0
++    assert "acceptance.reference" not in values
++
++
++def test_matching_frozen_gate_keeps_a_complete_record_complete():
++    frozen = task_intake.frozen_values(PERFORMANCE / "frozen-gate.yaml")
++    view = intake.evaluate(approved_record(), spec_for(), frozen=frozen)
++    assert view["conflicts"] == [] and view["complete"] is True
++
++
++@pytest.mark.parametrize("source", ["prompt", "task_file", "grilling_brief", "repo_inspection"])
++def test_only_the_issue_or_frozen_record_confirms_an_acceptance_value(source):
++    spec = spec_for()
++    record = intake.new_record("task-performance", record_id="intake-source")
++    record = intake.set_fields(record, spec, {"acceptance.metric_key": "p95_ttft"}, source=source)
++    expected = "proposed" if source in ("prompt", "grilling_brief") else "assumed"
++    assert record["fields"]["acceptance.metric_key"]["status"] == expected
++
++
++def test_campaign_gate_blocks_until_complete(tmp_path):
++    partial = tmp_path / "partial.json"
++    partial.write_text(json.dumps(build(set(PARTIAL["fields"]["values"]))), encoding="utf-8")
++    gate, _ = task_intake.campaign_gate(partial)
++    assert gate["status"] == "blocked"
++    assert gate["allowed_next"] == ["read_only_preparation"]
++    complete = tmp_path / "complete.json"
++    complete.write_text(json.dumps(approved_record()), encoding="utf-8")
++    gate, gated = task_intake.campaign_gate(complete)
++    assert gate["status"] == "ready"
++    assert gate["complete"] is True
++    assert gated == approved_record()
++
++
++def test_campaign_start_refuses_an_incomplete_record_before_writing(project, tmp_path, capsys):  # noqa: F811
++    record = tmp_path / "record.json"
++    record.write_text(json.dumps(build(set(PARTIAL["fields"]["values"]))), encoding="utf-8")
++    assert cli.main(start_arguments(project, extra=("--intake", str(record)))) == 2
++    gate = json.loads(capsys.readouterr().out)
++    assert gate["status"] == "blocked" and gate["execution"] == "not started"
++    assert not project[3].exists()
++
++
++def test_campaign_start_retains_the_record_it_gated(project, tmp_path, capsys):  # noqa: F811
++    args = approved_start(start_arguments(project))
++    record = Path(args[-1])
++    assert cli.main(args) == 0
++    result = json.loads(capsys.readouterr().out)
++    retained = project[3] / "intake.json"
++    assert result["intake"]["gate"] == "ready"
++    assert result["intake"]["sha256"] == hashlib.sha256(retained.read_bytes()).hexdigest()
++    assert json.loads(retained.read_bytes()) == json.loads(record.read_bytes())
++    plan = json.loads((project[3] / "plan.json").read_bytes())
++    assert json.loads((project[3] / plan["intake_receipt"]).read_bytes()) == result["intake"]
++    assert cli.main(["campaign", "status", "--directory", str(project[3])]) == 0
++
++
++def test_campaign_start_without_a_record_is_blocked(project, capsys):  # noqa: F811
++    assert cli.main(start_arguments(project)) == 2
++    assert json.loads(capsys.readouterr().out)["reason"] == "missing_intake"
++    assert not project[3].exists()
++
++
++def test_day0_blocks_only_device_execution():
++    spec = spec_for("task-day-0")
++    view = intake.evaluate(intake.new_record("task-day-0", record_id="intake-day0"), spec)
++    stages = {item["stage"] for item in view["blockers"]}
++    assert stages == {"device_execution"}
++    assert "device_execution" not in view["allowed_next"]
++    record = intake.new_record("task-day-0", record_id="intake-day0")
++    record = intake.set_fields(record, spec, {
++        "day0.checkpoint": "checkpoints/model-v1",
++        "day0.tokenizer_or_processor": "tokenizer-v1",
++        "day0.target_engine_and_device": "engine x.y on device Z",
++        "day0.first_scope": "text generation",
++        "day0.reference_implementation": "reference wheel 1.0",
++        "day0.replayable_inputs": "fixtures/day0-inputs",
++        "day0.consistency_criteria": "top-1 token agreement >= 99%",
++    }, source="prompt")
++    view = intake.evaluate(record, spec)
++    assert view["complete"] is True
++    assert "device_execution" not in view["allowed_next"]
++
++

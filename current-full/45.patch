@@ -1,0 +1,93 @@
++def test_mismatching_issue_reopens_an_explicit_card_choice():
++    spec = spec_for()
++    record = build({intake.REFERENCE})
++    record, _ = ask(record, spec)
++    key = "acceptance.metric_key"
++    record = intake.answer(record, spec, question_id=card_id(record, key), value="p95_ttft")
++    record = intake.set_fields(record, spec, {key: "p99_ttft", intake.REFERENCE:
++                               ALL_VALUES[intake.REFERENCE]}, source="issue")
++    view = intake.evaluate(record, spec)
++    assert view["fields"][key]["status"] == "conflicting"
++    assert {x["value"] for x in view["questions"][0]["options"]} == {"p95_ttft", "p99_ttft"}
++
++
++def test_frozen_gate_mismatch_blocks_candidate_search():
++    spec = spec_for()
++    frozen = {"acceptance.metric_key": "p99_ttft"}
++    view = intake.evaluate(build(), spec, frozen=frozen)
++    assert view["complete"] is False
++    assert [item["field"] for item in view["conflicts"]] == ["acceptance.metric_key"]
++    search = next(item for item in view["blockers"] if item["stage"] == "candidate_search")
++    assert "acceptance.metric_key" in {item["field"] for item in search["blocked_by"]}
++    assert "candidate_search" not in view["allowed_next"]
++
++
++def test_unknown_paths_are_rejected_by_the_record_check():
++    spec = spec_for()
++    record = build()
++    record["fields"]["bogus.path"] = {"value": 1, "source": "prompt", "status": "confirmed"}
++    with pytest.raises(intake.IntakeError) as error:
++        intake.evaluate(record, spec)
++    assert error.value.code == "invalid_record"
++
++
++def test_non_finite_numbers_are_rejected():
++    spec = spec_for()
++    record = intake.new_record("task-performance", record_id="intake-nan")
++    with pytest.raises(intake.IntakeError) as error:
++        intake.set_fields(record, spec, {"acceptance.min_improvement_pct": "nan"},
++                          source="issue")
++    assert error.value.code == "invalid_value"
++
++
++def test_cli_evaluate_matches_the_python_view_and_writes_only_the_record(tmp_path, capsys):
++    record_path = tmp_path / "record.json"
++    code = cli.main([
++        "task", "intake", "evaluate", "--task", "task-performance",
++        "--record", str(record_path), "--json",
++    ])
++    assert code == 0
++    result = json.loads(capsys.readouterr().out)
++    stored = json.loads(record_path.read_text(encoding="utf-8"))
++    expected = intake.evaluate(stored, spec_for())
++    for key in ("questions", "blockers", "conflicts", "allowed_next", "complete",
++                "execution", "revision"):
++        assert result[key] == expected[key]
++    assert {path.name for path in tmp_path.iterdir()} == {"record.json", "record.json.lock"}
++
++
++def test_cli_answer_then_summary(tmp_path, capsys):
++    record_path = tmp_path / "record.json"
++    assert cli.main([
++        "task", "intake", "evaluate", "--task", "task-performance",
++        "--record", str(record_path), "--set", "acceptance.metric_key=p95_ttft", "--json",
++    ]) == 0
++    view = json.loads(capsys.readouterr().out)
++    question = next(item for item in view["questions"]
++                    if item["field"] == "acceptance.metric_unit")
++    assert cli.main([
++        "task", "intake", "answer", "--record", str(record_path),
++        "--question", question["id"], "--value", "ms", "--json",
++    ]) == 0
++    capsys.readouterr()
++    assert cli.main(["task", "intake", "summary", "--record", str(record_path),
++                     "--json"]) == 0
++    summary = json.loads(capsys.readouterr().out)
++    assert summary["proposed"]["acceptance.metric_unit"] == "ms"
++    assert summary["execution"] == "not started"
++
++
++def test_cli_stale_answer_exits_two(tmp_path, capsys):
++    record_path = tmp_path / "record.json"
++    assert cli.main([
++        "task", "intake", "evaluate", "--task", "task-performance",
++        "--record", str(record_path), "--set", "acceptance.metric_key=p95_ttft", "--json",
++    ]) == 0
++    view = json.loads(capsys.readouterr().out)
++    question = next(item for item in view["questions"]
++                    if item["field"] == "acceptance.min_improvement_pct")
++    assert cli.main(["task", "intake", "evaluate", "--record", str(record_path),
++                     "--set", "acceptance.metric_key=p99_ttft", "--json"]) == 0
++    capsys.readouterr()
++    assert cli.main(["task", "intake", "answer", "--record", str(record_path),
++                     "--question", question["id"], "--value", "5", "--json"]) == 2

@@ -1,0 +1,122 @@
++        {"value": "p95_tpot", "hint": "p95 time per output token"},
++        {"value": "peak_memory", "hint": "peak device memory under the fixed load"}
++      ],
++      "required_before": ["baseline_measurement", "candidate_search"]
++    },
++    {
++      "path": "acceptance.metric_unit",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "What unit does the benchmark report for that performance metric?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.direction",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "choice",
++      "question": "Does success require a lower value or a higher value for that metric?",
++      "options": [
++        {"value": "minimize", "hint": "lower is better"},
++        {"value": "maximize", "hint": "higher is better"}
++      ],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.min_improvement_pct",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "number",
++      "question": "What minimum percentage improvement lets a trial candidate replace the incumbent?",
++      "depends_on": ["acceptance.metric_key"],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.reference",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which acceptance issue or frozen task file should supply the confirmed gate values?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.baseline_revision",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which exact baseline revision should every comparison use?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.target_kind",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "choice",
++      "question": "Should the independent final meet a fixed performance bound or a minimum gain over the pinned baseline?",
++      "options": [{"value": "absolute"}, {"value": "relative_improvement_pct"}],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.target_value",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "number",
++      "question": "What value must the independent final reach, expressed in the metric unit for a fixed bound or in percent for a gain?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_benchmark",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "Which quality benchmark version or split and reference input set should each run use?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_metric",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "Which numerical quality result should the scorer report?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_comparator",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "choice",
++      "question": "Which relation between the scored quality result and its limit counts as passing?",
++      "options": [{"value": "at_least"}, {"value": "at_most"}, {"value": "equal"}],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_limit",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "number",
++      "question": "What number defines the quality limit or, for baseline-relative service reuse, the permitted regression?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.quality_unit",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 1,
++      "type": "text",
++      "question": "What concrete unit or scale applies to the quality result and its limit?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "environment.quality_command",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which exact command scores output quality against the agreed benchmark?",

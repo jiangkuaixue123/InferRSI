@@ -1,0 +1,88 @@
+@@ -29,6 +31,9 @@ except ModuleNotFoundError:  # Python 3.10: pytest supplies tomli.
+     import tomli as tomllib
+ 
+ 
++cpu_project = test_project_optimization.project
++
++
+ @pytest.fixture(scope="module", params=["codex", "workswarm"])
+ def distribution(tmp_path_factory, request):
+     root = tmp_path_factory.mktemp(request.param + "-plugin") / "distribution"
+@@ -49,6 +54,51 @@ def invoke(distribution, cwd, *args):
+     )
+ 
+ 
++def test_bundled_project_start_requires_approval(distribution, cpu_project):
++    repo, _, _, campaign = cpu_project
++    skill = (distribution / "skills/inferrsi/SKILL.md").read_text(encoding="utf-8")
++    assert "campaign start --prepare-intake --intake" in skill
++    assert "q:task_brief:" in skill
++
++    def cli(*args, expected=0):
++        result = invoke(distribution, repo, *args)
++        assert result.returncode == expected, result.stdout + result.stderr
++        return json.loads(result.stdout)
++
++    schema_path = cli("skills", "resource", "task-performance", "intake.json")["path"]
++    schema = json.loads(Path(schema_path).read_text(encoding="utf-8"))
++    assert (schema["task"], schema["schema_version"]) == ("task-performance", 1)
++
++    start = test_project_optimization.start_arguments(cpu_project)
++    assert cli(*start, expected=2)["reason"] == "missing_intake"
++    assert not campaign.exists()
++
++    record = write_start_record(start, overrides={
++        "environment.backend": "cpu", "environment.device_model": "fixture CPU",
++        "optimization.model": "fixture compute", "optimization.model_revision": "1",
++        "optimization.framework": "Python", "optimization.workload": "compute(16)",
++    })
++    intake = ["task", "intake"]
++    record_args = ["--record", str(record), "--json"]
++    assert cli(*intake, "evaluate", *record_args)["brief_review"] == "awaiting_confirmation"
++    launch = [*start, "--intake", str(record)]
++    prepared = cli(*launch, "--prepare-intake")
++    assert prepared["brief_review"] == "awaiting_confirmation"
++    assert prepared["task_brief"]["campaign_launch"]
++    blocked = cli(*launch, expected=2)
++    assert (blocked["status"], blocked["execution"]) == ("blocked", "not started")
++    assert not campaign.exists()
++
++    approved = cli(*intake, "answer", *record_args, "--question",
++                   prepared["task_brief"]["id"], "--value", "approve")
++    assert approved["brief_review"] == "approved"
++    started = cli(*launch)
++    assert started["intake"]["gate"] == "ready"
++    assert json.loads((campaign / "intake.json").read_bytes()) == json.loads(record.read_bytes())
++    plan = json.loads((campaign / "plan.json").read_bytes())
++    assert json.loads((campaign / plan["intake_receipt"]).read_bytes()) == started["intake"]
++
++
+ def runtime_bytes(plugin):
+     runtime = plugin / "runtime"
+     if (runtime / "payload.zip").is_file():
+diff --git a/tests/fixtures/campaign_intake.py b/tests/fixtures/campaign_intake.py
+index 9d7de38b..74509546 100644
+--- a/tests/fixtures/campaign_intake.py
++++ b/tests/fixtures/campaign_intake.py
+@@ -13,7 +13,8 @@ from inferrsi.harness.executor import service_revision, validate_service_setting
+ from inferrsi.harness.executor.candidates import identity
+ 
+ 
+-def approved_start(arguments, *, overrides=None):
++def write_start_record(arguments, *, overrides=None):
++    """Seed supplied project and acceptance inputs without approving the brief."""
+     args = parser().parse_args(arguments)
+     path = args.session.with_suffix(".intake.json")
+     fixture = Path(__file__).parent / "intake/performance/complete.json"
+@@ -88,6 +89,11 @@ def approved_start(arguments, *, overrides=None):
+     accepted = {key: value for key, value in values.items() if key.startswith("acceptance.")}
+     record = intake.set_fields(record, spec, accepted, source="issue")
+     task_intake.write_record(path, record)
++    return path
++
++
++def approved_start(arguments, *, overrides=None):
++    path = write_start_record(arguments, overrides=overrides)
+     invocation = [*arguments, "--intake", str(path)]
+     output = io.StringIO()
+     with redirect_stdout(output):
