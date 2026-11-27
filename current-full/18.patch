@@ -1,0 +1,100 @@
++    conflicts = _frozen_conflicts(record, spec, frozen)
++    question_fields = []
++    for field in spec["fields"]:
++        if not _applicable(record, field):
++            continue
++        entry = _entry(record, field["path"])
++        if entry.get("status") == "conflicting":
++            question_fields.append(field)
++    if not question_fields:
++        missing = []
++        for field in spec["fields"]:
++            if not _applicable(record, field):
++                continue
++            entry = _entry(record, field["path"])
++            if entry["status"] == "assumed" or (
++                entry["status"] == "unknown" and not entry.get("asked")
++            ):
++                missing.append(field)
++        if missing:
++            lowest = min(field.get("batch", 1) for field in missing)
++            question_fields = [field for field in missing if field.get("batch", 1) == lowest]
++    questions = [_question(record, field) for field in question_fields]
++    blockers = []
++    for stage in BLOCKING_STAGES:
++        blocked_by = []
++        for path, entry in ((path, _entry(record, path)) for path in fields):
++            field = fields[path]
++            if stage not in field.get("required_before", []):
++                continue
++            if not _applicable(record, field):
++                continue
++            status = entry.get("status")
++            if status in BLOCKING or (
++                stage == "candidate_search" and path.startswith(ACCEPTANCE)
++                and status != "confirmed"
++            ):
++                blocked_by.append({"field": path, "status": status})
++        if blocked_by:
++            blockers.append({"stage": stage, "blocked_by": blocked_by})
++    if conflicts:
++        entries = [{"field": item["field"], "status": "conflicting"} for item in conflicts]
++        existing = next((item for item in blockers if item["stage"] == "candidate_search"),
++                        None)
++        if existing is None:
++            blockers.append({"stage": "candidate_search", "blocked_by": entries})
++        else:
++            existing["blocked_by"].extend(entries)
++    brief = None
++    review = "not_required"
++    if spec["task"] == "task-performance":
++        review = "collecting_inputs"
++        if not blockers and not conflicts:
++            brief = _performance_brief(record, spec)
++            decision = record.get("brief_decision")
++            review = "awaiting_confirmation"
++            if decision == {"question": brief["id"], "value": "approve"}:
++                review = "approved"
++            elif decision == {"question": brief["id"], "value": "revise"}:
++                review = "changes_requested"
++            else:
++                questions = [_brief_question(brief)]
++        if review != "approved":
++            for stage in ("baseline_measurement", "candidate_search"):
++                blocker = next((item for item in blockers if item["stage"] == stage), None)
++                if blocker is None:
++                    blocker = {"stage": stage, "blocked_by": []}
++                    blockers.append(blocker)
++                blocker["blocked_by"].append({"field": "task_brief", "status": review})
++    blocked_stages = {item["stage"] for item in blockers}
++    allowed_next = ["read_only_preparation"] + [
++        stage for stage in ("baseline_measurement", "candidate_search")
++        if stage not in blocked_stages
++    ]
++    complete = not blockers and not conflicts
++    return {
++        "schema_version": SCHEMA_VERSION,
++        "task": spec["task"],
++        "record_id": record["record_id"],
++        "revision": record["revision"],
++        "phase": record["phase"],
++        "primary_task": record["primary_task"],
++        "questions": questions,
++        "needs_user_input": bool(questions) or review == "changes_requested",
++        "brief_review": review,
++        "task_brief": brief,
++        "blockers": blockers,
++        "conflicts": conflicts,
++        "allowed_next": allowed_next,
++        "complete": complete,
++        "execution": "not started",
++        "fields": {
++            path: {"value": entry.get("value"), "source": entry.get("source"),
++                   "status": entry.get("status")}
++            for path, entry in record["fields"].items()
++        },
++    }
++
++
++def answer(record: dict, spec: dict, *, question_id: str, value: object = None,
++           unknown: bool = False) -> dict:

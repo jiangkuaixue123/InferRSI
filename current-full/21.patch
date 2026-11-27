@@ -1,0 +1,105 @@
++    return json.dumps(record, ensure_ascii=False, indent=2) + "\n"
++
++
++def write_record(path: Path, record: dict) -> str:
++    """Write the record atomically; return the sha256 of the written bytes."""
++    path = Path(path)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    text = _payload(record)
++    descriptor, temp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
++    try:
++        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
++            stream.write(text)
++        os.replace(temp, path)
++    except BaseException:
++        Path(temp).unlink(missing_ok=True)
++        raise
++    return hashlib.sha256(text.encode("utf-8")).hexdigest()
++
++
++def frozen_values(path: Path) -> dict:
++    """Acceptance values stated by a frozen gate task file, keyed by spec path."""
++    from . import task_input
++
++    preview = task_input.preview(path)
++    if not preview["valid"]:
++        first = preview["errors"][0]
++        raise intake.IntakeError(
++            "invalid_frozen", f"frozen gate record: {first['field']} {first['message']}")
++    acceptance = preview["task"]["acceptance"]
++    return {f"acceptance.{name}": value for name, value in acceptance.items()
++            if name != "reference" and preview["sources"][f"acceptance.{name}"] == "yaml"}
++
++
++def parse_sets(items: list[str]) -> dict:
++    values = {}
++    for item in items:
++        path, separator, value = item.partition("=")
++        if not separator or not path.strip():
++            raise intake.IntakeError("invalid_set", f"--set expects PATH=VALUE, got {item!r}")
++        values[path.strip()] = value
++    return values
++
++
++def _persist(path: Path, record: dict, view: dict) -> None:
++    for path_key, field in record["fields"].items():
++        field["status"] = view["fields"][path_key]["status"]
++    record["open_questions"] = view["questions"]
++    record["blockers"] = view["blockers"]
++    record["conflicts"] = view["conflicts"]
++    record["allowed_next"] = view["allowed_next"]
++    record["complete"] = view["complete"]
++    write_record(path, record)
++
++
++def _evaluate_gate(record: dict, spec: dict, frozen_path: Path | None,
++                   *, selecting_reference: bool) -> tuple[dict, dict | None]:
++    snapshot = record.get("selected_gate")
++    selected_path = None
++    if snapshot:
++        selected_path = Path(record.get("selected_gate_file", snapshot["reference"]))
++    if frozen_path is None:
++        frozen_path = selected_path
++    frozen = frozen_values(frozen_path) if frozen_path else None
++    reference = intake.selected_reference(record)
++    reference_path = selected_path or (Path(reference) if reference else None)
++    if frozen_path and reference and reference_path.resolve() == frozen_path.resolve():
++        snapshot = {"reference": reference, "values": frozen}
++        if selecting_reference:
++            record["selected_gate"] = snapshot
++            record["selected_gate_file"] = str(frozen_path.resolve())
++        if record.get("selected_gate") == snapshot:
++            matching = {}
++            for field in spec["fields"]:
++                key = field["path"]
++                entry = record["fields"].get(key, {})
++                if key in frozen and entry.get("status") != "conflicting":
++                    if entry.get("value") in (None, frozen[key]):
++                        matching[key] = frozen[key]
++            record = intake.set_fields(record, spec, matching, source="frozen_gate")
++        else:
++            record.pop("selected_gate", None)
++            record.pop("selected_gate_file", None)
++            record.pop("brief_decision", None)
++            record.pop("campaign_launch", None)
++            record["fields"][intake.REFERENCE] = {
++                "value": reference, "source": "repo_inspection", "status": "assumed",
++            }
++            record["revision"] += 1
++    return record, frozen
++
++
++def _evaluate_and_save(path: Path, record: dict, spec: dict, frozen_path: Path | None,
++                       *, selecting_reference: bool) -> dict:
++    record, frozen = _evaluate_gate(record, spec, frozen_path,
++                                    selecting_reference=selecting_reference)
++    view = intake.evaluate(record, spec, frozen=frozen)
++    _persist(path, record, view)
++    return view
++
++
++def evaluate_command(args) -> dict:
++    record_path = Path(args.record)
++    existing = record_path.is_file()
++    if existing:
++        record = read_record(record_path)

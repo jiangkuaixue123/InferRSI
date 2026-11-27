@@ -1,0 +1,87 @@
++    record = ["--record", str(path), "--json"]
++    path.write_text(json.dumps(build(set(ALL_VALUES) - {key})))
++    assert cli.main(["task", "intake", "evaluate", *record]) == 0
++    view = json.loads(capsys.readouterr().out)
++    question = next(q for q in view["questions"] if q["field"] == key)
++    unchanged = path.read_bytes()
++    for cmd in (["evaluate", "--set", f"{key}={invalid}"],
++                ["answer", "--question", question["id"], "--value", str(invalid)]):
++        assert cli.main(["task", "intake", *cmd, *record]) == 2
++        error = json.loads(capsys.readouterr().out)
++        assert error["error"] == "invalid_value" and key in error["message"]
++        assert path.read_bytes() == unchanged
++    assert cli.main(["task", "intake", "answer", "--question", question["id"],
++                     "--value", str(valid), *record]) == 0
++    assert json.loads(capsys.readouterr().out)["fields"][key]["value"] == valid
++
++
++def test_loaded_approved_record_reopens_unusable_execution_values(project, tmp_path, capsys):  # noqa: F811
++    path = tmp_path / "intake.json"
++    record = approved_record()
++    invalid = {"environment.repetitions": 0, "environment.rounds": -1,
++               "environment.max_minutes": -5}
++    for key, value in invalid.items():
++        record["fields"][key]["value"] = value
++    record["complete"] = True
++    path.write_text(json.dumps(record))
++    assert cli.main(start_arguments(project, extra=("--intake", str(path)))) == 2
++    gate = json.loads(capsys.readouterr().out)
++    assert gate["status"] == "blocked" and gate["task_brief"] is None
++    assert gate["allowed_next"] == ["read_only_preparation"]
++    assert not project[3].exists()
++
++    cmd = ["task", "intake", "evaluate", "--record", str(path), "--json"]
++    assert cli.main(cmd) == 0
++    reopened = json.loads(capsys.readouterr().out)
++    assert all(reopened["fields"][key]["status"] == "unknown" for key in invalid)
++    assert "brief_decision" not in json.loads(path.read_text())
++    assert reopened["revision"] > record["revision"]
++    for key in ("environment.repetitions", "environment.max_minutes", "environment.rounds"):
++        token = card_id(task_intake.read_record(path), key)
++        assert cli.main(["task", "intake", "answer", "--record", str(path), "--json",
++                         "--question", token, "--value", "1"]) == 0
++        view = json.loads(capsys.readouterr().out)
++    assert view["brief_review"] == "awaiting_confirmation"
++    assert not view["complete"]
++
++
++@pytest.mark.parametrize(("key", "invalid"), [
++    ("environment.repetitions", 0),
++    ("environment.rounds", -1),
++    ("environment.max_minutes", -5),
++])
++def test_saved_record_reopens_one_unusable_value_and_rejects_it_again(tmp_path, capsys, key,
++                                                                    invalid):
++    path = tmp_path / "intake.json"
++    record = approved_record()
++    record["fields"][key]["value"] = invalid
++    record["complete"] = True
++    path.write_text(json.dumps(record))
++    assert cli.main(["task", "intake", "evaluate", "--record", str(path), "--json"]) == 0
++    reopened = json.loads(capsys.readouterr().out)
++    assert reopened["fields"][key]["status"] == "unknown"
++    assert not reopened["complete"]
++    token = card_id(task_intake.read_record(path), key)
++    unchanged = path.read_bytes()
++    assert cli.main(["task", "intake", "answer", "--record", str(path), "--json",
++                     "--question", token, "--value", str(invalid)]) == 2
++    error = json.loads(capsys.readouterr().out)
++    assert error["error"] == "invalid_value" and key in error["message"]
++    assert path.read_bytes() == unchanged
++
++
++@pytest.mark.parametrize(("flag", "value", "reason"), [
++    ("--metric-unit", "other", "launch_conflict"),
++    ("--measure-command", "{python} {protocol}/different.py {result}", "launch_conflict"),
++    ("--rounds", "2", "launch_conflict"),
++    ("--quality-key", "different", "launch_changed"),
++    ("--quality-benchmark", "wrong-corpus", "launch_conflict"),
++    ("--warmups", "7", "launch_changed"),
++])
++def test_changed_launch_never_creates_campaign(project, capsys, flag, value, reason):  # noqa: F811
++    args = approved_start(start_arguments(project))
++    assert cli.main([*args, flag, value]) == 2
++    assert json.loads(capsys.readouterr().out)["reason"] == reason
++    assert not project[3].exists()
++
++

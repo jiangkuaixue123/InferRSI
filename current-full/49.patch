@@ -1,0 +1,84 @@
++def test_preparation_invalidates_only_changed_brief(project, capsys):  # noqa: F811
++    args = approved_start(start_arguments(project))
++    record = Path(args[-1])
++    approved = json.loads(record.read_bytes())["brief_decision"]
++    assert cli.main([*args, "--prepare-intake"]) == 0
++    unchanged = json.loads(capsys.readouterr().out)
++    assert unchanged["brief_review"] == "approved"
++    assert json.loads(record.read_bytes())["brief_decision"] == approved
++    assert cli.main([*args, "--warmups", "2", "--prepare-intake"]) == 0
++    revised = json.loads(capsys.readouterr().out)
++    assert revised["brief_review"] == "awaiting_confirmation"
++    assert revised["task_brief"]["id"] != unchanged["task_brief"]["id"]
++    assert cli.main([*args, "--warmups", "2"]) == 2
++    assert not project[3].exists()
++
++
++def test_planning_only_and_changed_protocol_are_refused(project, capsys):  # noqa: F811
++    args = start_arguments(project)
++    path = project[3].with_suffix(".intake.json")
++    task_intake.write_record(path, approved_record())
++    assert cli.main([*args, "--intake", str(path)]) == 2
++    assert json.loads(capsys.readouterr().out)["reason"] == "unbound_brief"
++    approved = approved_start(args)
++    script = project[1] / "quality.py"
++    script.write_text(script.read_text() + "\n# Updated validator\n")
++    assert cli.main(approved) == 2
++    assert json.loads(capsys.readouterr().out)["reason"] == "launch_changed"
++    assert not project[3].exists()
++
++
++@pytest.mark.parametrize(("kind", "goal"), [("absolute", 30), ("relative_improvement_pct", 200)])
++def test_independent_final_checks_approved_target(project, capsys, kind, goal):  # noqa: F811
++    from tests.apps.test_project_optimization import submit
++    from tests.fixtures.diagnosis import diagnosis_args
++
++    args = approved_start(start_arguments(project), overrides={
++        "protocol.target_kind": kind, "protocol.target_value": goal})
++    assert cli.main(args) == 0
++    capsys.readouterr()
++    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
++    capsys.readouterr()
++    code, view = submit(project, capsys, 20)
++    assert code == 0 and view["best"]["score"] == 20
++    cli.main(["campaign", "final", "--directory", str(project[3]), "--reason", "retest"])
++    capsys.readouterr()
++    final = json.loads((project[3] / "state.json").read_bytes())["final"]["assessment"]
++    assert (final["verdict"], final["reason"]) == ("FAIL", "final_performance_target_not_met")
++
++
++def test_boolean_quality_success_does_not_override_numeric_limit(project, capsys):  # noqa: F811
++    from tests.apps.test_project_optimization import submit
++    from tests.fixtures.diagnosis import diagnosis_args
++
++    (project[1] / "quality.py").write_text(
++        "import json, sys\nfrom pathlib import Path\n"
++        "value = json.loads((Path(sys.argv[1])/'config.json').read_text())['metric']\n"
++        "result = {'correct':True,'errors':value-10,'unit':'tokens','dataset':'fixture-exact-v1'}\n"
++        "Path(sys.argv[2]).write_text(json.dumps(result))\n")
++    args = approved_start(start_arguments(project), overrides={
++        "protocol.quality_metric": "errors", "protocol.quality_limit": 0,
++        "protocol.quality_comparator": "at_most", "protocol.quality_unit": "tokens"})
++    assert cli.main(args) == 0
++    capsys.readouterr()
++    assert cli.main(diagnosis_args(project[3], "campaign")) == 0
++    capsys.readouterr()
++    _, view = submit(project, capsys, 20)
++    assert view["best"]["kind"] == "baseline"
++    assert view["latest_observation"]["assessment"]["quality_passed"] is False
++
++
++@pytest.mark.parametrize("reported", ["wrong-corpus", None])
++def test_abba_quality_rejects_foreign_or_missing_corpus(project, capsys, reported):  # noqa: F811
++    from tests.apps.test_project_optimization import submit
++    from tests.fixtures.diagnosis import diagnosis_args
++
++    (project[1] / "quality.py").write_text(
++        "import json, sys\nfrom pathlib import Path\n"
++        "result = {'correct':True,'accuracy':100,'unit':'points','dataset':'fixture-exact-v1'}\n"
++        "if Path(sys.argv[1]).name == 'candidate':\n"
++        f"    result['dataset'] = {reported!r}\n"
++        "    if result['dataset'] is None: del result['dataset']\n"
++        "Path(sys.argv[2]).write_text(json.dumps(result))\n")
++    args = approved_start(start_arguments(project), overrides={
++        "protocol.quality_metric": "accuracy", "protocol.quality_limit": 95,

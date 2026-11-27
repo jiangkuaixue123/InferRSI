@@ -1,0 +1,69 @@
+             specification.update(measure_command=shlex.split(request.measure_command),
+@@ -180,7 +185,7 @@ def run_session(
+             plan["external_knowledge_project"] = external_project
+         if report_metadata is not None:
+             plan["report_metadata"] = report_metadata
+-        result = state.initialize(root, plan)
++        result = {"plan": plan} if prepare_project_only else state.initialize(root, plan)
+         operation = "campaign" if project else "benchmarks session"
+         result["instructions"] = (
+             f"Read the frozen TASK.md. Record the measured bottleneck with {operation} "
+diff --git a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
+index 3abf1a04..3e2192c5 100644
+--- a/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
++++ b/src/inferrsi/knowledge/data/skill_library/_compiled/_provenance.json
+@@ -1,7 +1,7 @@
+ {
+   "schema_version": 1,
+   "repository": "https://github.com/InferMatrixLab/InferRSI",
+-  "source_revision": "bf14fec0bd909efcfeb2bc02d69fe227d0c51ce6",
++  "source_revision": "6f5775d29d3546732113900ef811d60a5943aa62",
+   "registry": {
+     "path": "src/inferrsi/knowledge/data/skill_library/skill-index.json",
+     "sha256": "d243e2ae44c7badc8e68788153de35fe6ac31de618b7499fef6339eadf396871"
+diff --git a/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json b/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
+index 93037dda..4fc6071a 100644
+--- a/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
++++ b/src/inferrsi/knowledge/data/skill_library/_compiled/inputs.json
+@@ -614,7 +614,7 @@
+       "description": "Select the starting route for day-0 model support, inference performance optimization, debugging, accuracy repair, version alignment, derived-engine development or independent runtime bring-up."
+     },
+     "files": {
+-      "SKILL.md": "3dae791f61b26810332e05fbabe6fd7113abf9ed8609aef663535a267525849c",
++      "SKILL.md": "ea7b823fd4b4e00531356649ef0963854a93cf958db2880efdceec870d6f0c5c",
+       "references/routes/accuracy.json": "5a672842ec26262d8827f7ce8d92de9bd956859ff5244189c0519b8f0dd188e3",
+       "references/routes/day0-model.json": "77b26d1300e5535d8b595cef95c6c803ea1322e92f38b68ae2905f69355a814f",
+       "references/routes/debug.json": "75241e43d12fb961d3f48d1b683e4df321c0f18e683959aedca9722e78a8b78f",
+@@ -1168,7 +1168,8 @@
+       "description": "Use for Day-0 onboarding of a new checkpoint or architecture to a named inference engine. Produce a reproducible target run, stage parity evidence and a regression fixture."
+     },
+     "files": {
+-      "SKILL.md": "ca187de2205b3aa86b4ca5123fb0107a8235aa84f9d942d3771a8a665df1a0a3"
++      "SKILL.md": "ca187de2205b3aa86b4ca5123fb0107a8235aa84f9d942d3771a8a665df1a0a3",
++      "intake.json": "14ebe6f94888b17a06970ac7729ebd14f19c73c2de50ee16100c6eced85b0bbc"
+     }
+   },
+   "task-debug": {
+@@ -1204,7 +1205,8 @@
+       "description": "Use when a correct inference baseline misses a latency, throughput, memory or cost target. Compare compatible changes under the user's workload and quality gate."
+     },
+     "files": {
+-      "SKILL.md": "bf5a137504566b6ee4eeaee18400d52aae99a1db3c8247dea7247d653103df0b"
++      "SKILL.md": "46b44df9d2b6b91ae305df21536d9cf04903b3ea442b0413b3f2319452faafb9",
++      "intake.json": "13ecae20885d7ea07bbb00b84be3481f4a825590e2e4044abd6cdb2d6bcaf680"
+     }
+   },
+   "task-version-alignment": {
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md b/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
+index d7ff9c81..cc1db903 100644
+--- a/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/inference-task-router/SKILL.md
+@@ -43,6 +43,8 @@ metadata:
+ 
+ Choose one primary skill by the requested deliverable. Load its full procedure
+ before the first supporting evidence search. Record secondary tasks for follow-up.
++When two primary skills remain plausible after reading the request, ask the user
++which deliverable they want before loading either; do not guess a route.
+ The route cards remain available to callers that consume the JSON summaries.
+ 
+ | Primary skill | Choose it when | Route card |

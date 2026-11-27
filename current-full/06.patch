@@ -1,0 +1,67 @@
++inferrsi campaign start ... --intake <record.json> --prepare-intake
++# Read back the returned task_brief, including campaign_launch. Wait for the user's card reply.
++inferrsi task intake answer --record <record.json> --question <returned-brief-id> --value approve
++inferrsi campaign start ... --intake <record.json>
++```
++
++Preparation stages the inputs in a temporary directory, compares them with the
++intake and returns an executable brief. It starts no campaign or measurements.
++The final approval binds the effective settings, including defaults, candidate
++inputs, commands, sampling, budget and the evaluation configuration. Running
++preparation again with the same settings preserves an existing approval. A
++changed launch needs a fresh card. Planning-only briefs can still be reviewed.
++Before service configuration is bound, the brief labels its quality inputs
++provisional. Show the prepared inequality on the final card for a measured run.
++
++Start rechecks the selected gate and the approved launch before creating the
++campaign. Missing, stale and mismatched approval exits with status 2. A matching
++preapproval starts unattended. The frozen `plan.json` references a receipt in
++`plan/` with the SHA-256 and revision of the retained `intake.json`.
++
++For AB/BA the two approved measurement commands describe the same script with
++the candidate path supplied at execution. For a scored quality check, the
++frozen script self-reports the dataset it evaluated in the top-level `dataset`
++field. Harness compares that label with the approved `--quality-benchmark`,
++including its version and split. The script supplies the evidence for which
++corpus it loaded. A missing or mismatched label makes a scored result
++`INCONCLUSIVE`. An explicit `status: candidate_failure` is an unscored
++rejection. A candidate rejection is `FAIL`, and a baseline rejection leaves
++the comparison `INCONCLUSIVE`. A scored result also supplies the boolean
++acceptance key and a numeric result under the approved quality metric
++(JSON dotted paths are supported). A boolean metric on the acceptance key is
++compared as 1 or 0 when its approved unit is `boolean`. Numeric quality results
++declare their scale in the top-level `unit` field. Both campaign modes compare the
++score in the unit on the final card. The harness converts between `fraction` /
++`ratio` and `%` / `percent`; other units must match exactly. Missing or
++incompatible numeric units give `INCONCLUSIVE`. Service baseline tolerances
++are additive in the approved score unit. For percent scores, a tolerance
++of one permits a difference of one percentage point. The independent final checks the approved absolute bound or
++relative improvement against the pinned baseline. For service reuse, the first
++ranked objective names the final metric and the configuration supplies its
++dataset, score key, threshold or allowed degradation, commands and sampling.
++The bound brief displays an absolute score threshold or the allowed change from
++the retained baseline for the current comparison epoch. Higher-is-better scores
++may drop by the approved tolerance; lower-is-better scores may rise by it.
++The comparator applies to the candidate score in both modes. For a relative
++gate, the brief labels the numeric allowance as `protocol.quality_baseline_tolerance`
++and identifies the retained score in `protocol.quality_reference`.
++
++## Cards and text fallback
++
++When `evaluate` returns `needs_user_input: true`, the host presents its questions
++and waits for a reply. In Codex Desktop the agent invokes the native question
++tool. Hosts without cards show the questions as a numbered list. Both record
++the user's replies through `task intake answer`. The CLI itself does not display
++a desktop widget.
+diff --git a/docs/searchspace-index.json b/docs/searchspace-index.json
+index d5eefeac..a897dd6d 100644
+--- a/docs/searchspace-index.json
++++ b/docs/searchspace-index.json
+@@ -6,7 +6,7 @@
+     "skill_root": "src/inferrsi/knowledge/data/skill_library",
+     "matrix_sha256": "8e47da7aa4824d160710dee6ec63e91011f399def948b25a6bf74abe1bc45db9",
+     "catalog_sha256": "d243e2ae44c7badc8e68788153de35fe6ac31de618b7499fef6339eadf396871",
+-    "metadata_sha256": "f4399276c8389f33ad81a2a25ccd0ff4392a37635ae9c53943ece4995c84d246"
++    "metadata_sha256": "fb1f0510dc77db12b240ee9030e90eef95e7c97e3f24071decd37d24c17b5a55"
+   },
+   "skills": {

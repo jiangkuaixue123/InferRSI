@@ -1,0 +1,15 @@
++        quality_score = 0.5
++        decision = evaluator.service_quality_decision("final", gate, True)
++        assert decision.assessment["verdict"] == "PASS"
+     else:
+         assert decision.assessment["reason"] == "final_performance_target_not_met"
++    final.update(execution={"binding": binding, "measurements": measured,
++                            "quality_score": quality_score}, assessment=decision.assessment)
++    assert _service_evidence.evaluation_reason(tmp_path, plan, final) is None
++    final["assessment"]["performance"]["passed"] = not passed
++    assert _service_evidence.evaluation_reason(
++        tmp_path, plan, final
++    ) == "unverifiable_evaluation_evidence"
+ 
+ 
+ def test_screening_actual_gain_is_not_an_estimated_or_formal_threshold():

@@ -1,0 +1,123 @@
++      "path": "optimization.framework",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which engine or framework serves the model?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.backend",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which backend runs the workload?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.device_model",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which device SKU or chip must the measurement use?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "optimization.workload",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which fixed workload, input set and concurrency replay for every trial?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.baseline_command",
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "text",
++      "question": "Which command runs the unchanged baseline?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.repetitions",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "integer",
++      "question": "How many repetitions and warmups should each side run?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "environment.max_minutes",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 2,
++      "type": "number",
++      "question": "What time budget bounds the whole round?",
++      "required_before": ["baseline_measurement"]
++    },
++    {
++      "path": "protocol.comparison",
++      "user_choice": true,
++      "maps_to": "campaign-protocol",
++      "batch": 3,
++      "type": "choice",
++      "question": "How should baseline and candidate trials be compared?",
++      "options": [
++        {"value": "abba", "hint": "alternate unchanged baseline and candidate under the same conditions"},
++        {"value": "service_reuse", "hint": "keep one owned service and reuse it across retained candidates"}
++      ],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "protocol.service_lifecycle",
++      "user_choice": true,
++      "maps_to": "summary-only",
++      "batch": 3,
++      "type": "text",
++      "question": "When is the reused service restarted, and which caches or state are cleared between candidates?",
++      "depends_on": ["protocol.comparison"],
++      "required_when": {"field": "protocol.comparison", "equals": "service_reuse"},
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "environment.candidate_command",
++      "maps_to": "task-input/v1",
++      "batch": 3,
++      "type": "text",
++      "question": "Which command runs a submitted candidate under the same conditions?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "optimization.plane",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 3,
++      "type": "choice",
++      "question": "Which SIAS plane may this round change?",
++      "options": [
++        {"value": "harness", "hint": "scheduling, batching, serving policy or harness code"},
++        {"value": "model", "hint": "model execution, kernels or precision"},
++        {"value": "infra", "hint": "runtime, drivers or device placement"}
++      ],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "environment.rounds",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 3,
++      "type": "integer",
++      "question": "How many candidate rounds may search run, and how much time is reserved for the final?",
++      "required_before": ["candidate_search"]
++    }
++  ]
++}
+diff --git a/tests/apps/test_engineering_benchmark_plugins.py b/tests/apps/test_engineering_benchmark_plugins.py
+index b1eadd83..c0c748fa 100644
+--- a/tests/apps/test_engineering_benchmark_plugins.py
++++ b/tests/apps/test_engineering_benchmark_plugins.py
+@@ -5,6 +5,7 @@ import json
+ from tests.apps.test_codex_plugin import distribution as distribution
+ from tests.apps.test_codex_plugin import invoke
+ from tests.apps.test_project_optimization import project as project

@@ -1,0 +1,88 @@
+         p = service_metric_change(obj, measured["values"][name], parent["values"][name])
+         b = service_metric_change(obj, measured["values"][name], initial["values"][name])
+@@ -90,12 +94,38 @@ def assess_service_performance(settings, measured, parent, initial, *, screening
+         limits &= bounded
+         actual_gain |= improved
+         gain |= metrics[name]["gain_passed"]
+-    passed = limits and (actual_gain if screening else gain)
+-    return {
+-        "passed": passed,
+-        "metrics": metrics,
+-        "reason": "performance_gate_satisfied" if passed else "performance_gate_not_met",
+-    }
++    passed = parent is None or (limits and (actual_gain if screening else gain))
++    reason = "performance_gate_satisfied" if passed else "performance_gate_not_met"
++    if passed and target:
++        name = settings["ranking"][0]
++        objective = next(obj for obj in settings["objectives"] if obj["id"] == name)
++        passed = meets_target(target, baseline=initial["values"][name],
++                              candidate=measured["values"][name], direction=objective["direction"])
++        if passed is None:
++            raise ValueError("Undefined relative performance target against the baseline")
++        if not passed:
++            reason = target_failure
++    return {"passed": passed, "metrics": metrics, "reason": reason}
++
++
++def assess_service_attempt_performance(plan, attempt, measured):
++    """Apply the frozen gates identically during execution and evidence replay."""
++    role = attempt["role"]
++    target = None
++    failure = "performance_gate_not_met"
++    if role == "candidate" and "candidate_min_improvement_pct" in plan:
++        target = {"target_kind": "relative_improvement_pct",
++                  "target_value": plan["candidate_min_improvement_pct"]}
++    elif role == "final":
++        target = plan.get("performance_target")
++        failure = "final_performance_target_not_met"
++    parent = attempt["parent"]
++    if parent is None and target is None:
++        return {"passed": True, "metrics": {}}
++    return assess_service_performance(
++        plan["evaluation_settings"], measured, None if parent is None else parent["measurements"],
++        attempt["initial"]["measurements"], target=target, target_failure=failure,
++    )
+ 
+ 
+ def prefer_service_measurements(settings, left, right):
+@@ -121,7 +151,10 @@ def service_quality_score(settings, document):
+         or document["samples"] != config["samples"]
+     ):
+         raise ValueError("Missing numerical quality evidence")
+-    return score
++    # Retained pre-intake plans used scores in the scorer's native scale.
++    if "unit" not in config:
++        return score
++    return quality_score_in_unit(score, document.get("unit"), config["unit"])
+ 
+ 
+ def service_quality_passed(settings, score, reference=None):
+@@ -131,7 +164,10 @@ def service_quality_passed(settings, score, reference=None):
+         return sign * (score - config["threshold"]) >= 0
+     if reference is None or not service_io.finite_number(reference):
+         raise ValueError("Missing compatible baseline quality reference")
+-    return sign * (score - reference) >= -config["tolerance"]
++    if "unit" not in config:
++        return sign * (score - reference) >= -config["tolerance"]
++    delta = Decimal(str(score)) - Decimal(str(reference))
++    return sign * delta >= -Decimal(str(config["tolerance"]))
+ 
+ 
+ def service_assessment(verdict, reason, **fields):
+@@ -175,8 +211,9 @@ def service_measurement_decision(role, reference_kind, gate, quality):
+         skipped = ((("quality",), "performance_gate_not_met"),)
+         if role != "candidate":
+             skipped += ((("profile",), "not_required"),)
++        reason = gate.get("reason", "performance_gate_not_met")
+         return ServiceStageDecision(
+-            service_assessment("FAIL", "performance_gate_not_met", performance=gate),
++            service_assessment("FAIL", reason, performance=gate),
+             skipped,
+         )
+     if reference_kind == "parent":
+diff --git a/src/inferrsi/harness/evaluator/_service_evidence.py b/src/inferrsi/harness/evaluator/_service_evidence.py
+index 830c6320..fb80dd4a 100644
+--- a/src/inferrsi/harness/evaluator/_service_evidence.py
++++ b/src/inferrsi/harness/evaluator/_service_evidence.py
+@@ -111,16 +111,7 @@ def evaluation_reason(root, plan, record):
+         measured = _service.aggregate_service_measurements(settings, docs, role)

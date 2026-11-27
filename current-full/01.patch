@@ -1,0 +1,48 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index f184c263..68c4d443 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -99,6 +99,10 @@ Portable operator guidance and candidate procedures live in the [skill library](
+ Benchmark comparisons, ordinary project optimization and packaged optimization
+ tasks each have one entry workflow; see
+ [optimization requests](docs/guides/operations.md#optimization-requests).
++For interactive project performance work, collect the numeric performance goal,
++benchmark and quantitative quality gate through [task intake](docs/guides/task-intake.md).
++Read back the complete task brief and obtain a separate approval on a native
++question card before measurement or candidate edits.
+ 
+ ## Dev smoke (local)
+ 
+diff --git a/docs/apps-module-migrations.json b/docs/apps-module-migrations.json
+index f195dc52..e0d4bfbb 100644
+--- a/docs/apps-module-migrations.json
++++ b/docs/apps-module-migrations.json
+@@ -584,6 +584,8 @@
+       "docs/guides/skill-evaluation/local-skill-evaluation.md",
+       "examples/qwen21_turbo_b300.py",
+       "examples/qwen21_turbo_quality.py",
++      "src/inferrsi/apps/cli/campaign_intake.py",
++      "src/inferrsi/apps/cli/task_intake.py",
+       "src/inferrsi/apps/delivery/__init__.py",
+       "src/inferrsi/apps/delivery/projection.py",
+       "src/inferrsi/apps/delivery/snapshot.py",
+diff --git a/docs/guides/operations.md b/docs/guides/operations.md
+index babb4499..d01cde87 100644
+--- a/docs/guides/operations.md
++++ b/docs/guides/operations.md
+@@ -33,6 +33,7 @@ Effect classes used below:
+ | Inspect a store candidate's history | Python `open_knowledge_store(...).history` | Read-only | Opens an existing store and reads the revision lineage for one store ID |
+ | Amend repository-owned knowledge | Scoped repository PR | — | Repository review and integration authority apply; this is not a runtime store Update |
+ | Validate or preview a YAML task file | CLI `task validate` / `task preview [--json]` / `task schema` / `task template`; [task input](task-input.md) | Read-only | Reads one schema v1 task file and prints field errors, effective normalized values, their sources and plan/run blockers. Starts no process or probe and writes no workspace, plan, run or evidence file. A complete preview does not authorize execution |
++| Confirm missing inputs before a measured task | CLI `task intake evaluate` / `answer` / `summary [--json]`; `campaign start --intake`; [task intake](task-intake.md) | Local record | Evaluates an intake/v1 record against the packaged field spec and returns the questions that unblock the next stage. `evaluate` and `answer` update the named record under a sibling file lock; `summary` reads. Starts no process or probe. A complete record does not authorize execution or freeze a gate |
+ | Inspect/prepare experiments | CLI `doctor`; `plan` or `--dry-run` | Read-only inspection / preview | `doctor` may invoke bounded probes and does not certify target compatibility; `plan` previews a specification without persisting a campaign or authorizing execution |
+ | Execute/inspect experiments | CLI `run`; `status`; `report` | Experiment-executing / read-only / report-generating | `run` executes caller-supplied commands and records evidence; `status` reads recorded progress; `report` generates HTML from recorded evidence |
+ | Deliver retained results | CLI `export --input --output [--agent-job]`; Python `apps.delivery.export_bundle` / `read_bundle` | Report-generating | Publishes Markdown, offline HTML, versioned result JSON and artifact index from one snapshot without remeasurement. Optional native-job input verifies standalone Benchmark terminal token usage. Iterative CLI final returns separate delivery status. See [result delivery](result-delivery.md) and [Benchmark metrics](../benchmarks/benchmark-metrics.md) |
+@@ -530,7 +531,9 @@ snapshot pinned at startup. The campaign Dashboard remains available through
+   and follow `next_action`. The default comparison uses Qwen denoising and MoE
+   forward in independent on/off sessions. See the [comparison workflow](../benchmarks/benchmark-comparison.md).
+ - **Optimize your project.** Use `inferrsi campaign` in the current Agent
+-  conversation. Supply the workload, metric, gates, scripts and budget, then
++  conversation. Collect the quantitative performance target, benchmark, accuracy
++  bound, scripts and budget through [task intake](task-intake.md). Read back
++  the complete brief and obtain a separate user approval before measurement, then

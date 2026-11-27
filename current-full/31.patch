@@ -1,0 +1,101 @@
++again. Do not derive a threshold from a request such as "make it faster": the
++acceptance issue or frozen plan states it.
++
++## Read back the task brief and obtain approval
++
++Collect the final **numeric** performance goal (absolute bound with units, or
++minimum percentage improvement over the pinned baseline), performance workload
++and timing boundary. Confirm the accuracy benchmark and split, metric,
++comparison, numeric threshold and unit, plus the quality check and failure
++policy. A candidate retention threshold alone does not specify a final target.
++
++For a measured campaign, prepare the intended invocation **before** the final
++card: run `campaign start --prepare-intake --intake <record.json>` with the
++actual launch options. Resolve any reported mismatch. Include the returned
++`task_brief.campaign_launch` settings in the read-back. Preparation starts no
++measurements. A planning-only brief can be reviewed without a launch.
++
++When intake returns `brief_review: awaiting_confirmation`, read back the complete
++`task_brief` in the user's language, including the target and accuracy
++inequalities, benchmark, pinned setup, commands, scope, comparison and budget.
++Then call the native question-card tool for a **separate** approve-or-revise
++decision on that brief. Wait for a new explicit reply. Use `task intake answer`
++with this revision's `q:task_brief:...` ID. Record requested changes, update the
++fields and read back the new brief for fresh approval. Until approval, only
++read-only preparation is allowed, even if the user answered every field or
++selected an existing acceptance plan. Hand the approved record to `campaign
++start --intake`; apply the approved conditions to the validator and final replay.
+ 
+ ## Run the procedure
+ 
+diff --git a/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json
+new file mode 100644
+index 00000000..8a419ac3
+--- /dev/null
++++ b/src/inferrsi/knowledge/data/skill_library/tasks/task-performance/intake.json
+@@ -0,0 +1,309 @@
++{
++  "schema_version": 1,
++  "task": "task-performance",
++  "description": "Confirmation fields for a performance-optimization round. Questions are asked only for fields that block the next stage; acceptance values stated outside an acceptance issue or frozen task file stay proposals.",
++  "fields": [
++    {
++      "path": "optimization.objective",
++      "user_choice": true,
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which outcome decides this round?",
++      "required_before": ["baseline_measurement", "candidate_search"]
++    },
++    {
++      "path": "acceptance.metric_key",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which metric decides this round?",
++      "options": [
++        {"value": "p95_ttft", "hint": "client-observed p95 time to first token"},
++        {"value": "throughput", "hint": "requests completed per second under the fixed load"},
++        {"value": "p95_tpot", "hint": "p95 time per output token"},
++        {"value": "peak_memory", "hint": "peak device memory under the fixed load"}
++      ],
++      "required_before": ["baseline_measurement", "candidate_search"]
++    },
++    {
++      "path": "acceptance.metric_unit",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which unit does the metric use?",
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.direction",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "choice",
++      "question": "Should the metric go down or up?",
++      "options": [
++        {"value": "minimize", "hint": "lower is better"},
++        {"value": "maximize", "hint": "higher is better"}
++      ],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.min_improvement_pct",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "number",
++      "question": "What minimum improvement is required to keep a candidate?",
++      "depends_on": ["acceptance.metric_key"],
++      "required_before": ["candidate_search"]
++    },
++    {
++      "path": "acceptance.reference",
++      "maps_to": "task-input/v1",
++      "batch": 1,
++      "type": "text",
++      "question": "Which acceptance issue or frozen plan states the gate?",
++      "required_before": ["candidate_search"]
++    },
